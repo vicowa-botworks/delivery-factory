@@ -11123,12 +11123,12 @@ claim_reset
 esc_live() { # the files whose mentions are instructions, one path per line
 	printf '%s\n' factory/common.sh factory/escalation-label.sh factory/factory.sh \
 		factory/triage.sh factory/selftest.sh AGENTS.md docs/factory.md \
-		.opencode/skills/factory/SKILL.md NEXT.md
+		.opencode/skills/factory/SKILL.md
 }
 # The two decision logs are NOT in that list, and they are the ONLY exemption (#360 measured a ninth
-# live file omitted by accident, not by rule). A log entry records what was believed when it was
-# written, so re-editing history to match a renamed label turns every citation in it into a lie. A
-# name in a log is a fossil; anywhere else -- `NEXT.md` joined at H-0201 -- it is an instruction.
+# live file omitted by accident, not by rule). A name in a log is a fossil; anywhere else it is an
+# instruction. `NEXT.md` joined the list at H-0201 in the repository this harness was extracted from
+# and stayed there (H-0406): the census enumerates THIS tree and its controls plant through this list.
 
 esc_ctrl_copy() { # esc_ctrl_copy <dest-root> -- the live files, outside the repository
 	local dest=$1 f
@@ -11146,7 +11146,7 @@ esc_one_home() { # esc_one_home [root] -- the name is spelled once, and that onc
 	local root=$HERE/.. name f hit bad=0
 	local -a files=(factory/common.sh factory/escalation-label.sh factory/factory.sh
 		factory/triage.sh factory/selftest.sh AGENTS.md docs/factory.md
-		.opencode/skills/factory/SKILL.md NEXT.md)
+		.opencode/skills/factory/SKILL.md)
 	[ -z "${1:-}" ] || root=$1
 	if ! name=$(bash "$root/factory/escalation-label.sh" 2>&1); then
 		printf '            factory/escalation-label.sh refuses: %s\n' "$name" >&2

@@ -1,68 +1,40 @@
-# Build output
-/bin/
+# Per-target clones and the harness' own runtime state never live in this
+# tree (they live under $FACTORY_TREES and the state dir, H-0406), but a tick
+# run in-tree during development must not dirty it:
+.factory-run/
+.factory-ledger.json
+.factory-log/
+.factory-claims/
+.factory-timers/
+.factory-mutate/
+.factory-mutation-journal.jsonl
+.factory-mutation-state.json
+.factory-mutation-v1.json
+.factory-audit-remote.json
+.factory-sealed-history.jsonl
+.factory-watchdog-journal.jsonl
+.factory-watchdog-state.json
+.factory-watchdog-alerts.json
 
-# A cross-compile check (`GOOS=windows go build ./cmd/plock`) drops the binary in the
-# tree next to the package it built. It is not an artefact anybody wants tracked.
+# Selftest fixtures and the --self-test legs' scratch output.
+/check-close-verb.*.selftest.log
+/check-decisions.*.selftest.log
+/check-denies.*.selftest.log
+/check-doc-labels.*.selftest.log
+/check-scripts.*.selftest.log
+/check-mutation-*.selftest.json
+/mutate-report.*.selftest.json
+/mutation-variants.*.selftest.tsv
+*.tmp
+
+# Inherited hygiene: this tree was once parental-lockout's, and its built
+# binary is the four-times-committed 10 MB blob (memory #1264). The rule
+# travels so a stray `go build` can never be swept in by `git add -A` here.
+/plock
+/plock.exe
+/bin/
 *.exe
 
-# The same artefact with no extension at all, which is what `go build ./cmd/plock`
-# leaves on a unix host. It has been committed twice by `git add -A` after a build
-# run to check a mutation compiles, and a 10 MB binary in a PR is not reviewable.
-/plock
-
-# Test and coverage artefacts
-*.test
-*.out
-coverage.*
-
-# `python3 -m py_compile scripts/check-mutations.py` leaves this behind. The two tools
-# run as scripts and create nothing on their own, but every other tool artefact in this
-# file is here because it was swept into a commit by `git add -A`, and the ignore is
-# cheaper than the memory.
+# scanner bytecode
 __pycache__/
-
-# Local agent state (Magic Context session/note storage). Never part of the
-# project; it was swept in by `git add -A` twice, which is why it is ignored rather
-# than remembered.
-.cortexkit/
-
-# Editor noise
-*.swp
-.idea/
-.vscode/
-
-# Local agent state (Magic Context); never part of the project
-.cortexkit/
-
-# Manual e2e runs write a transcript, the daemon's log and a copy of /etc/plock into a
-# timestamped directory here. A transcript names a user, a host and a session id, and a
-# backup of /etc/plock is a copy of the admin credential hash -- neither belongs in a
-# commit, and both are produced by the same `git add -A` that has swept this file's other
-# entries in.
-testing/e2e/runs/
-
-# `check-mutations.py` imports scripts/mutset.py, which drops a __pycache__ beside the
-# source on every run. It is generated, it changes with the Python version, and a bulk
-# `git add -A` in a moment of haste would commit it.
-__pycache__/
-
-# 360 px capture fixtures: throwaway config, state, audit trail, Chrome profile, PNGs.
-# The committed artifacts live in docs/screenshots/360/; these are the runs they came from.
-/testing/capture/runs/
-
-# check-mutations.py undo journal (#169): written before the first mutant lands, deleted by
-# a run that finishes. Ignored so a run stopped by an uncatchable signal cannot have its marker
-# swept into a commit by `git add -A`; its presence is still what the next run refuses on.
-/.plock-mutant-journal.json
-
-# packaging artifacts (scripts/package.sh); never commit a built package
-/dist
-
-# The delivery supervisor's own state (#216): journal, ledger, lock, and the halt file. All four are
-# machine state. Every other entry in this file is here because `git add -A` swept it into a commit,
-# and hoping is not a control. HALT is ignored for a second reason: a halt one machine wrote should
-# not be shipped to another by a commit.
-/factory/log/
-/factory/ledger/
-/factory/run/
-/factory/HALT
+*.pyc

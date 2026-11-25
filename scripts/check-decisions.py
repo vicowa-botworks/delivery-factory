@@ -737,6 +737,53 @@ BAD = {
 }
 
 
+# --- extraction parent lineage (H-0406) ---
+# `scripts/extraction-commit-map` is the `git filter-repo` old->new commit map carried out of the
+# extraction of this harness from `vicowa-botworks/parental-lockout` at `2adea1bab529`. Rows are
+# full shas, old side first; the new side is 40 zeros when the commit touched only paths the
+# extraction set left in the product, so it survives only in the parent lineage. A decision-log
+# token naming such a commit is a true statement about the parent lineage and an openable one
+# there, and the map is the receipt that it existed when the graft was cut. A token on neither
+# side stays a refusal -- the fabricated checkpoint this rule was written to catch (H-0021..H-0023,
+# and the `cf00b44` drift #433 priced) is on neither side.
+PARENT_MAP_PATH = "scripts/extraction-commit-map"
+_parent_map = None
+
+
+def parent_map():
+    global _parent_map
+    if _parent_map is None:
+        _parent_map = {}
+        try:
+            with open(os.path.join(ROOT, PARENT_MAP_PATH), encoding="utf-8") as fh:
+                for line in fh.read().splitlines()[1:]:
+                    parts = line.split()
+                    if len(parts) == 2 and SHA.match(parts[0]) and SHA.match(parts[1]):
+                        _parent_map[parts[0]] = parts[1]
+        except OSError:
+            pass
+    return _parent_map
+
+
+def parent_lineage(sha):
+    """Where a commit token sits in the parent lineage: 'carried', 'dropped', or None.
+
+    'carried' means the graft kept the commit under a rewritten id; 'dropped' means it touched
+    only product paths and lives only in `vicowa-botworks/parental-lockout`. Both prove the
+    commit existed at extraction time; neither is an assertion the map alone cannot check.
+    A token matching several old-side prefixes is None -- ambiguous is not resolved.
+    """
+    pm = parent_map()
+    if not pm or not SHA.match(sha or ""):
+        return None
+    if sha in pm:
+        return "carried" if pm[sha].strip("0") else "dropped"
+    hits = [o for o in pm if o.startswith(sha)]
+    if len(hits) == 1:
+        return "carried" if pm[hits[0]].strip("0") else "dropped"
+    return None
+
+
 def git_checkpoint_resolver(shas):
     """Which of these objects exist in this repository, and are commits. One batch call, not one per entry.
 
@@ -764,7 +811,14 @@ def git_checkpoint_resolver(shas):
         return None
     # One line per input, in order: `<sha> commit` for a commit, `<obj> missing` for anything else.
     lines = out.stdout.splitlines()
-    return {s: (i < len(lines) and lines[i].endswith(" commit")) for i, s in enumerate(shas)}
+    res = {s: (i < len(lines) and lines[i].endswith(" commit")) for i, s in enumerate(shas)}
+    # Parent-lineage seam (H-0406): a token the graft moved or left behind existed, and the shipped
+    # map says which. Existence is what this resolver answers; what a dropped checkpoint is NOT
+    # revertible from is disclosed in H-0406, not hidden by passing it silently.
+    for s in shas:
+        if not res.get(s) and parent_lineage(s):
+            res[s] = True
+    return res
 
 
 def checkpoint_problems(entries, resolve):
@@ -974,6 +1028,12 @@ def provenance_pair_problems(text, entries, resolve, message_of):
             continue
         msg = get(message_of, sha)
         if not msg:
+            if parent_lineage(sha):
+                # The commit existed when the graft was cut -- the shipped map says so -- and its
+                # subject-versus-PR agreement was checked by the parent repository's own gate
+                # before extraction. Its bytes are not here, so this rule does not claim to read
+                # them now; it declines to re-check what it cannot open, on the recorded receipt.
+                continue
             problems.append(
                 "%s: entry %s asserts `%s` (PR #%s), but the commit's message could not be read, so "
                 "the pair is unverified and unverified is not passed"
@@ -1080,7 +1140,7 @@ def provenance_pair_problems(text, entries, resolve, message_of):
 # digit (H-0171 x2, H-0172, quotes verified at the new lines) and two by revision pin (H-0176, H-0177
 # re-read as `35cd0ea:scripts/check-decisions.py:586`, because the 539 they measured no longer exists
 # in the file and a pin, unlike a re-date, states which tree they measured).
-POINTER_DEBT = 589  # citations that owe an anchor; may only fall (H-0361 (issue #440; numbered H-0353 until the yield H-0362) re-measured 583 -> 589 beside the entry that records it, a legal +6 adoption measured at the head that ships this line: the #440 continuation repair -- a revision-qualified coordinate now fills its file into the continuation store when the path half resolves uniquely, where before a pinned row handed nothing to the bare `:NNN` rows after it and left them `not-a-path`, checked by nothing -- adopted 6 rows, all named: rows 8404 (the `factory/factory.sh` `:919` of `H-0167`), 8405 (`:632` and `:665`, same entry) and 13800 (`factory/selftest.sh` `:402`, `:725` and `:1304`, `H-0253`). No claim is new: each row already wrote the coordinate, `factory/factory.sh` and `factory/selftest.sh` are untouched at this head, and a row that was invisible is now guarded. The 123-indeterminate repair itself moved no debt: lengthened rows stayed anchored and pinned rows were never in the debt number -- the indeterminate bucket was a refused list, not the counted one; H-0308 (issue-389 review round 1) pays back the 4 that H-0307 booked as a rise, 587 -> 583, because that rise was recorded against an enforcement the shipped gate did not provide: the review of #471 at 2026-11-19T14:57:56Z ran `--citations` at 83a428e and found all four of H-0307's coordinates in the UNANCHORED bucket -- log rows 15489, 15490, 15531 and 15614, pointing at 2907, 2908, factory/selftest.sh 16162 and 15255 -- while H-0307's `Effect:` and this comment both called them anchored on the text they quote. Cause: `ANCHOR_AFTER` reads a double-quoted fragment flush against the coordinate's closing backtick, up to three spaces or apostrophes of gap, and `(`H-0093`) says` was sitting in that gap. Measured both directions on probe copies before anything was repaired: editing 2907's 54 to 55 on the shipped bytes answered rc 0 and silent -- the refusal the entry promised did not fire -- and the same edit beside one flush anchor answered rc 1 naming the row. The four now carry flush fragments on their own physical lines, so the ratcheted number is 583 on the tree that ships this line and the histogram `--citations` prints is `factory/selftest.sh` 49 and `factory/DECISIONS.md` 19: the 50 and 22 of the 587 reading, less the four. What that 587 clause itself claimed for the pair was `factory/selftest.sh` 50 and `factory/DECISIONS.md` 21, and 0 rows in the unanchored shape -- 22 is what the tree at 83a428e prints, and 4 rows had arrived in exactly the shape it denied, so both numbers are corrected here rather than inherited; the rise H-0307 recorded was legal beside its entry, and the word `anchored` in that clause was not true of the tree it was written on; H-0284's third base sync onto `b433f01` re-measured 583 on the merged pair with this entry out of the log and 583 again with it in -- 1141 citations before, 1147 after, the entry's six all anchored on their own physical line -- so the number trunk composed for trunk's corpus is verified true of the merged corpus, which is the claim the auto-merge of this file made without being asked; H-0282's second base sync onto `feb3b16` re-measured 583 on the merged corpus and the fall from 584 is row-composed, not inferred: the --citations histograms of the HEAD pair and the merged pair differ by exactly one open row -- `factory/DECISIONS.md:8469` (H-0169) `docs/factory.md:205` UNANCHORED here, re-aimed by trunk to `docs/factory.md:204` anchored there -- so the merged corpus counts that row exempt, and 584 - 1 = 583 with no other row moving across the boundary; the revision-qualified bucket grew 85 -> 89 by the union's four new revision-naming rows, none of which was ever open; H-0279's sync re-measured 584 on the merged pair and the fall from 586 is composed, not inferred: 582 open rows carried in, +2 from the rows H-0139 and H-0146 became when the #374 class refused their trunk-re-quoted present tense and they were past-tensed with the date -- the first refusals the shipped gate filed against this repository's own oldest entry; the 27 anchored drifts that merge re-aimed by the gate's named line moved no debt because they were anchored throughout; H-0268's union merge re-measured 586 on the merged pair, and the fall from this branch's 588 is composed, not inferred: this branch's logs run through the merged scanner answer 586 unanchored + 2 wrapped, and the 2 are the newline-cut anchors #369's bucket separates from the ratchet -- both live rows trunk fixed, so the merged corpus answers wrapped=0 and the 2 stop being debt without any promise being unmade; the open-row multiset diff of the same two corpora, re-measured at 12ddbc4 by H-0270 with this head's own scanner over both pairs of logs, holds 32 pure citing-line renames (14 at +2, 18 at +123) and 1 addition -- open rows 175 -> 176, the added row is main's own H-0256 Follow-up citing a bare :12339, 0 open rows lost -- and the unanchored-debt diff of the same pair is 74 rows each side over 586 on each: 5 pure renames all +2 (H-0200's :3187 row 10695->10697 and its two factory.sh rows 10697->10699, H-0210's selftest.sh:263/265 rows 11325->11327) plus 69 rows whose coordinates this merge re-aimed, entry-balanced, 0 lost 0 gained; two of the four pairs this comment formerly named, 10643->10645 and 10656->10658, name no open row in either corpus -- they are two of those re-aims, H-0200's rows at factory/common.sh 1435->1468 and 1554->1587; H-0254's row-by-row read of the review corrections of H-0253 said +11 citations and NO debt move; H-0255's multiset diff of the same two trees answers +12 -- the missed row was H-0254's own quotation of this constant: 2 self-qualify (1 revision-qualified, 1 anchored on its own quoted line), 10 land in the open shape the classifier does not count; H-0250: 546 -> 588, the 52 newly-aimed continuation rows this rule adopts, measured +52 at 3d8ff711 and every one listed in factory/DECISIONS.md)
+POINTER_DEBT = 376  # citations that owe an anchor; may only fall (H-0406 (the extraction of this harness out of `vicowa-botworks/parental-lockout` into `vicowa-botworks/delivery-factory`) re-measured 589 -> 376 at this head beside the entry that records it: the graft stranded coordinates whose files live only in the parent, and each stranded row either took the revision-qualified `2adea1ba:path:line` form (353 rows now self-name their revision) or fell into the counted debt it already owed -- nothing was deleted, and the must-be-zero buckets read 0 on the tree that ships this line; H-0361 (issue #440; numbered H-0353 until the yield H-0362) re-measured 583 -> 589 beside the entry that records it, a legal +6 adoption measured at the head that ships this line: the #440 continuation repair -- a revision-qualified coordinate now fills its file into the continuation store when the path half resolves uniquely, where before a pinned row handed nothing to the bare `:NNN` rows after it and left them `not-a-path`, checked by nothing -- adopted 6 rows, all named: rows 8404 (the `factory/factory.sh` `:919` of `H-0167`), 8405 (`:632` and `:665`, same entry) and 13800 (`factory/selftest.sh` `:402`, `:725` and `:1304`, `H-0253`). No claim is new: each row already wrote the coordinate, `factory/factory.sh` and `factory/selftest.sh` are untouched at this head, and a row that was invisible is now guarded. The 123-indeterminate repair itself moved no debt: lengthened rows stayed anchored and pinned rows were never in the debt number -- the indeterminate bucket was a refused list, not the counted one; H-0308 (issue-389 review round 1) pays back the 4 that H-0307 booked as a rise, 587 -> 583, because that rise was recorded against an enforcement the shipped gate did not provide: the review of #471 at 2026-11-19T14:57:56Z ran `--citations` at 83a428e and found all four of H-0307's coordinates in the UNANCHORED bucket -- log rows 15489, 15490, 15531 and 15614, pointing at 2907, 2908, factory/selftest.sh 16162 and 15255 -- while H-0307's `Effect:` and this comment both called them anchored on the text they quote. Cause: `ANCHOR_AFTER` reads a double-quoted fragment flush against the coordinate's closing backtick, up to three spaces or apostrophes of gap, and `(`H-0093`) says` was sitting in that gap. Measured both directions on probe copies before anything was repaired: editing 2907's 54 to 55 on the shipped bytes answered rc 0 and silent -- the refusal the entry promised did not fire -- and the same edit beside one flush anchor answered rc 1 naming the row. The four now carry flush fragments on their own physical lines, so the ratcheted number is 583 on the tree that ships this line and the histogram `--citations` prints is `factory/selftest.sh` 49 and `factory/DECISIONS.md` 19: the 50 and 22 of the 587 reading, less the four. What that 587 clause itself claimed for the pair was `factory/selftest.sh` 50 and `factory/DECISIONS.md` 21, and 0 rows in the unanchored shape -- 22 is what the tree at 83a428e prints, and 4 rows had arrived in exactly the shape it denied, so both numbers are corrected here rather than inherited; the rise H-0307 recorded was legal beside its entry, and the word `anchored` in that clause was not true of the tree it was written on; H-0284's third base sync onto `b433f01` re-measured 583 on the merged pair with this entry out of the log and 583 again with it in -- 1141 citations before, 1147 after, the entry's six all anchored on their own physical line -- so the number trunk composed for trunk's corpus is verified true of the merged corpus, which is the claim the auto-merge of this file made without being asked; H-0282's second base sync onto `feb3b16` re-measured 583 on the merged corpus and the fall from 584 is row-composed, not inferred: the --citations histograms of the HEAD pair and the merged pair differ by exactly one open row -- `factory/DECISIONS.md:8469` (H-0169) `docs/factory.md:205` UNANCHORED here, re-aimed by trunk to `docs/factory.md:204` anchored there -- so the merged corpus counts that row exempt, and 584 - 1 = 583 with no other row moving across the boundary; the revision-qualified bucket grew 85 -> 89 by the union's four new revision-naming rows, none of which was ever open; H-0279's sync re-measured 584 on the merged pair and the fall from 586 is composed, not inferred: 582 open rows carried in, +2 from the rows H-0139 and H-0146 became when the #374 class refused their trunk-re-quoted present tense and they were past-tensed with the date -- the first refusals the shipped gate filed against this repository's own oldest entry; the 27 anchored drifts that merge re-aimed by the gate's named line moved no debt because they were anchored throughout; H-0268's union merge re-measured 586 on the merged pair, and the fall from this branch's 588 is composed, not inferred: this branch's logs run through the merged scanner answer 586 unanchored + 2 wrapped, and the 2 are the newline-cut anchors #369's bucket separates from the ratchet -- both live rows trunk fixed, so the merged corpus answers wrapped=0 and the 2 stop being debt without any promise being unmade; the open-row multiset diff of the same two corpora, re-measured at 12ddbc4 by H-0270 with this head's own scanner over both pairs of logs, holds 32 pure citing-line renames (14 at +2, 18 at +123) and 1 addition -- open rows 175 -> 176, the added row is main's own H-0256 Follow-up citing a bare :12339, 0 open rows lost -- and the unanchored-debt diff of the same pair is 74 rows each side over 586 on each: 5 pure renames all +2 (H-0200's :3187 row 10695->10697 and its two factory.sh rows 10697->10699, H-0210's selftest.sh:263/265 rows 11325->11327) plus 69 rows whose coordinates this merge re-aimed, entry-balanced, 0 lost 0 gained; two of the four pairs this comment formerly named, 10643->10645 and 10656->10658, name no open row in either corpus -- they are two of those re-aims, H-0200's rows at factory/common.sh 1435->1468 and 1554->1587; H-0254's row-by-row read of the review corrections of H-0253 said +11 citations and NO debt move; H-0255's multiset diff of the same two trees answers +12 -- the missed row was H-0254's own quotation of this constant: 2 self-qualify (1 revision-qualified, 1 anchored on its own quoted line), 10 land in the open shape the classifier does not count; H-0250: 546 -> 588, the 52 newly-aimed continuation rows this rule adopts, measured +52 at 3d8ff711 and every one listed in factory/DECISIONS.md)
 
 # How many entries the two logs held when that number was measured, and therefore the smallest corpus
 # the number is a statement about. The ratchet is judged only at or above this size. Re-measured with the

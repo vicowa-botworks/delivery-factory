@@ -44,6 +44,18 @@
 # leg that dies mid-run leaves no listener behind.
 pfr_work=$work/pf469
 pfr_ci=$HERE/../.github/workflows/ci.yml
+# Loud skip when the subject is not in the tree, the shape 476-cgroup-constraints already
+# uses for a missing `install-timer.sh`. This family tests the pinned fetches of the
+# repository the harness supervises: that CI file is the supervised project's artifact,
+# and since the extraction (H-0406) the harness has a tree of its own without one. The
+# parent repository keeps running these legs for real while `factory/` still ships there;
+# when it goes, the test must be re-hosted into that repository's own suite.
+if [ ! -f "$pfr_ci" ]; then
+	printf '  SKIP  %-40s %s is not in this tree (the pinned fetches belong to\n' \
+		"469: pinned fetch retry" "$pfr_ci"
+	printf '        the supervised project'"'"'s CI, not to this harness)\n'
+	return 0
+fi
 pfr_say() { printf '            %s\n' "$1" >&2; }
 
 # The two fixture servers, written at run time into $pfr_work (the suite's scratch).
