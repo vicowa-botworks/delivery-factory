@@ -23,13 +23,44 @@ _factory_main() {
 	git -C "$FACTORY_DIR/.." worktree list --porcelain 2>/dev/null |
 		awk '/^worktree /{print substr($0,10); exit}'
 }
+# H-0407: the tree the harness lives in and the tree the work happens in are two things.
+# FACTORY_HARNESS (bound below) is where the code lives; FACTORY_ROOT is the TARGET, and the
+# harness repository is not automatically a target. The old default -- the primary checkout of
+# the repo holding the script -- pointed the factory at its own source the moment the harness
+# became its own repository. The default is now: that same checkout, UNLESS it is the harness
+# itself, in which case the primary checkout of the tree the caller is standing in; and if both
+# answers are the harness, there is no target and the run refuses. An EXPLICIT FACTORY_ROOT is
+# never refused, so a person who wants the harness watched as a repo like any other says so --
+# silence never says it.
+FACTORY_HARNESS=${FACTORY_HARNESS:-$(cd -- "$FACTORY_DIR/.." && pwd)}
+_factory_root_explicit=${FACTORY_ROOT:-}
 FACTORY_ROOT=${FACTORY_ROOT:-$(_factory_main)}
 [ -n "$FACTORY_ROOT" ] || FACTORY_ROOT=$(cd -- "$FACTORY_DIR/.." && pwd)
+# The split applies to a REAL harness checkout only. A bare fixture tree -- a directory the
+# selftest plants that is not a git repository -- has FACTORY_DIR/.. == FACTORY_HARNESS by
+# construction, and there the old default (the fixture itself) is the honest answer: refusing
+# or reaching for $PWD would rewrite the fixtures' premise. git-ness is the discriminator.
+if [ -z "$_factory_root_explicit" ] && [ "$FACTORY_ROOT" = "$FACTORY_HARNESS" ] &&
+   git -C "$FACTORY_HARNESS" rev-parse --git-dir >/dev/null 2>&1; then
+	_standing=$(git -C "$PWD" worktree list --porcelain 2>/dev/null |
+		awk '/^worktree /{print substr($0,10); exit}')
+	if [ -n "$_standing" ] && [ "$_standing" != "$FACTORY_HARNESS" ]; then
+		FACTORY_ROOT=$_standing
+	else
+		printf 'factory: no target: %s is the harness itself.\n' "$FACTORY_HARNESS" >&2
+		printf '  Run from inside the watched checkout, or name it explicitly:\n' >&2
+		printf '    FACTORY_ROOT=<path> %s\n' "${0:-factory.sh}" >&2
+		printf '  (An explicit FACTORY_ROOT naming even this tree is accepted -- watched is a\n' >&2
+		printf '  decision, not a default. Silence is not.)\n' >&2
+		exit 2
+	fi
+fi
 
 # The tree that holds the harness itself -- `factory/`, `.opencode/opencode.jsonc` (where the
 # `factory` agent and its `deny` rules are defined) and `.opencode/skills/factory/SKILL.md`. It is
 # NOT the same directory as FACTORY_ROOT whenever the harness runs from a linked worktree, which is
-# its entire life until this branch merges (D-0009).
+# its entire life until this branch merges (D-0009). Since H-0407 they differ by design: the harness
+# is its own repository and a target only when somebody says so.
 #
 # The distinction is what a tick starts or dies on. `opencode run` takes its project -- the agent,
 # the agent's permission list, and the skills -- from `$PWD`, and chdir*s *there*: measured 5 Nov, a
@@ -4799,14 +4830,14 @@ factory_log_journal_tail() {
 #   rc 0  the newest record in the window, three TAB-separated fields: the directory, the stamp of the
 #         line that named it (so a dead tail has a last word an operator can point at), and how the
 #         directory was obtained --
-#           how=recorded  the line named the directory itself: `LOG-AT <dir>`, or a `log=` field on a
-#                         PASS line if one is ever added to it.
-#           how=derived   an older `PASS … root=<tree>`. The generated unit writes `Environment=` lines
-#                         for PATH, the reviewer, the unit name and PWD and none for FACTORY_LOG, so for
-#                         anything the timer starts the journal is at `<root>/factory/log` -- which is
-#                         the path an operator is standing in. A hand-run shell with FACTORY_LOG
-#                         overridden is the one case the derivation can be wrong, and `how=derived` is
-#                         the line admitting it.
+#           how=recorded  the line named the directory itself: `LOG-AT <dir>`, or the `log=` field every
+#                         PASS line has carried since H-0407.
+#           how=derived   an older `PASS … root=<tree>`. Before H-0407 that WAS the code tree, and the
+#                         generated unit writes no `FACTORY_LOG` `Environment=` line, so the journal of
+#                         anything the timer started was at `<root>/factory/log` -- the path an operator
+#                         is standing in. Since the split `root=` is the TARGET, which is why the PASS
+#                         line names its own directory now: a derived answer can only come from a line
+#                         older than the pass that would have contradicted it.
 #   rc 1  the window holds no record of a directory at all.
 #   rc 2  it holds one whose directory cannot be read (`LOG-AT` with nothing after it). A record that is
 #         damaged is a different sentence from no record, and neither one is "it has not moved" (#228).
@@ -4956,7 +4987,7 @@ EOF
 	fi
 	body=$(printf 'old=%s new=%s prev-pass=%s how=%s' "$prev" "$new" "$at" "$how")
 	if [ "$how" = derived ]; then
-		extra=' The old path is derived from that pass'"'"'s own root= field, because it ran before a pass could name its journal directory; where it names the tree rather than the directory, FACTORY_LOG was overridden by hand. A path built that way is where the generated unit would have written, not where the old pass said it wrote: when the tree has no factory/log -- a fresh worktree, or one deleted since -- this same answer arrives with tail=skipped refuse=no-such-directory, and that pair is not evidence the old pass wrote nothing.'
+		extra=' The old path is derived from that pass'"'"'s own root= field, because it ran before a pass could name its journal directory; where it names the tree rather than the directory, FACTORY_LOG was overridden by hand. A PASS line has named its own directory as log= since H-0407, so a line carrying only root= predates the split, when root= was still the code tree: after it root= names the TARGET, and a path built from it is a journal that pass never wrote. A path built that way is where the generated unit would have written, not where the old pass said it wrote: when the tree has no factory/log -- a fresh worktree, or one deleted since -- this same answer arrives with tail=skipped refuse=no-such-directory, and that pair is not evidence the old pass wrote nothing.'
 	fi
 	old_file="$prev/supervisor.log"
 	# Each clause refuses a different way of being tricked into writing where nobody asked, and the order

@@ -2125,7 +2125,13 @@ factory_body() {
 	# recorded in triage.sh -- a tab is IFS whitespace and `read` would collapse an empty field and
 	# slide every column after it one place left.
 	rows=$(printf '%s\n' "$rows" | tail -n +2)
-	log_event "PASS units=$(printf '%s\n' "$rows" | grep -c . || true) dry=$DRY_RUN budget=${FACTORY_BUDGET}s root=$FACTORY_ROOT trees=$FACTORY_TREES"
+	# Three trees on one line, because since H-0407 they are three things: `root=` is the TARGET the
+	# work is delivered against, `repo=` the harness whose code this pass actually ran, and `log=` the
+	# directory this line was written into. The last is not decoration: `factory_log_prev_record`
+	# derives a previous pass's journal as `<root=>/factory/log` when a PASS line names no directory,
+	# and under the split that is a path the pass never wrote -- the wrong old= on a LOG-MOVED line,
+	# and a journal that really moved read as one that did not.
+	log_event "PASS units=$(printf '%s\n' "$rows" | grep -c . || true) dry=$DRY_RUN budget=${FACTORY_BUDGET}s root=$FACTORY_ROOT repo=$FACTORY_HARNESS log=$FACTORY_LOG trees=$FACTORY_TREES"
 	# And now the step that was missing (#342): 92 activations journaled `SUPERVISOR-STALE` -- the
 	# guard #260 had fixed read the right tree at last -- and nothing downstream of the line did
 	# anything, so the loop triaged, allocated ids and ran ticks on code 38 commits behind the
