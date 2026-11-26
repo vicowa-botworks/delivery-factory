@@ -75,15 +75,16 @@ done
 factory_preflight
 [ -n "$NAME" ] || NAME="${FACTORY_NAME}-factory"
 
-# The unit runs `ExecStart=$FACTORY_ROOT/factory/factory.sh`, so that path has to contain the harness
-# *at boot time* -- which means the branch the timer points at has to be one where it is committed.
+# The unit runs `ExecStart=$FACTORY_HARNESS/factory/factory.sh` (H-0407: the harness tree and the
+# target tree are two things), so that path has to contain the harness *at boot time* -- which means
+# the branch the timer points at has to be one where it is committed.
 # A timer installed from a worktree whose branch is not merged therefore points at whatever the
 # primary checkout happens to hold, and if main does not carry factory/ yet, every activation finds
 # no script, exits 127, and looks like a machine that is trying.
-if [ ! -x "$FACTORY_ROOT/factory/factory.sh" ]; then
-	printf 'install-timer: %s has no executable factory/factory.sh.\n' "$FACTORY_ROOT" >&2
-	printf '  The timer runs from the primary checkout, so the harness must be merged there first --\n' >&2
-	printf '  or point the install at the tree that holds it: FACTORY_ROOT=<checkout> %s --install\n' "$0" >&2
+if [ ! -x "$FACTORY_HARNESS/factory/factory.sh" ]; then
+	printf 'install-timer: %s has no executable factory/factory.sh.\n' "$FACTORY_HARNESS" >&2
+	printf '  The timer runs the harness from its primary checkout, so the harness must be merged\n' >&2
+	printf '  there first -- or point the install at the tree that holds it: FACTORY_HARNESS=<checkout> %s --install\n' "$0" >&2
 	printf '  A tick needs that tree twice over as well: `--agent factory` and the skill the instruction\n' >&2
 	printf '  points at both resolve from the project the CLI works in, and that is the tree `$PWD` names\n' >&2
 	printf '  -- the `Environment=PWD` line in the generated unit -- not `WorkingDirectory`, and not the\n' >&2
@@ -191,11 +192,12 @@ fi
 # the verdict and H-0056 records why; that is also why the command below starts with a fetch -- the
 # operator is a person with a terminal, and a fetch in their hands cannot park a pass.
 #
-# The tree asked of here is `$FACTORY_ROOT` and not `$FACTORY_HARNESS`: it is the tree `@REPO@`
-# becomes, so it is the tree the unit this script is about to write will exec. The two differ whenever
-# the harness is installed from a linked worktree, which is what the `-x` check above tells you to do.
+# The tree asked of here is `$FACTORY_HARNESS`, because since H-0407 that is the tree `@HARNESS@`
+# becomes: the unit execs the harness tree, so that is the tree whose commits the loop can see.
+# `$FACTORY_ROOT` is the target the loop delivers INTO -- staleness there is the target's own
+# business, resolved per pass, not something the ExecStart can be stale about.
 pos_rc=0
-pos=$(factory_supervisor_position "$FACTORY_ROOT") || pos_rc=$?
+pos=$(factory_supervisor_position "$FACTORY_HARNESS") || pos_rc=$?
 # Six fields, and the sixth is read into the void on purpose (#342 review, item 2): `read` gives the
 # LAST variable the rest of the line, so five names make `pos_dirty` the string "0\t<base-sha>" on a
 # clean tree -- a shape that is invisible to the guards below (they ask `pos_behind`/`pos_ahead`,
@@ -210,7 +212,7 @@ pos_base=${pos_base#refs/remotes/}
 
 # Which checkout the loop runs TODAY, read off the unit that is installed, before this script says
 # anything about it (#260). The sentences this replaces asserted `The unit execs
-# $FACTORY_ROOT/factory/factory.sh` -- composed from the template this script is about to write, never
+# $FACTORY_HARNESS/factory/factory.sh` -- composed from the template this script is about to write, never
 # asked of the unit -- and on 10 Nov that claim was false: the installed unit execed
 # `wt/factory-harness`, this refusal was about `parental-lockout`, and the operator was sent to
 # fast-forward a tree the loop never ran while the tree that did run sat 38 commits behind and was
@@ -228,7 +230,7 @@ describe_installed() {
 		case "$inst_rc" in
 		1)
 			printf '  No unit is armed at %s, so nothing runs today.\n' "$UNIT_FILE" >&2
-			printf '  This install would arm %s.\n\n' "$FACTORY_ROOT" >&2
+			printf '  This install would arm the harness at %s.\n\n' "$FACTORY_HARNESS" >&2
 			;;
 		4)
 			printf '  A unit file at %s cannot be read, so which checkout the loop runs today\n' "$UNIT_FILE" >&2
@@ -242,15 +244,15 @@ describe_installed() {
 		esac
 		return 0
 	fi
-	if [ "$inst_tree" = "$FACTORY_ROOT" ]; then
-		printf '  The installed unit execs this checkout, so this tree IS the supervisor: every merge\n' >&2
+	if [ "$inst_tree" = "$FACTORY_HARNESS" ]; then
+		printf '  The installed unit execs this harness, so this tree IS the supervisor: every merge\n' >&2
 		printf '  since its checkout is invisible to the loop that exists to act on them, and every\n' >&2
 		printf '  other check in this harness reads healthy while that is true (#249).\n\n' >&2
 		return 0
 	fi
 	printf '  Two trees are in play. The loop runs today from the one the unit execs: %s\n' "$inst_tree" >&2
 	printf '  The unit execs %s/factory/factory.sh, NOT %s/factory/factory.sh (#260).\n' \
-		"$inst_tree" "$FACTORY_ROOT" >&2
+		"$inst_tree" "$FACTORY_HARNESS" >&2
 	irc=0
 	ipos=$(factory_supervisor_position "$inst_tree") || irc=$?
 	case "$irc" in
@@ -275,7 +277,7 @@ EOF
 		;;
 	esac
 	printf '\n  The tree above is the code the queue is running right now. This install replaces\n' >&2
-	printf '  the unit, so after it the loop moves to:\n    %s\n' "$FACTORY_ROOT" >&2
+	printf '  the unit, so after it the loop moves to:\n    %s\n' "$FACTORY_HARNESS" >&2
 	printf '  Fix both, or read the journal the way it will read: a healthy-looking pass, from a\n' >&2
 	printf '  stale tree nothing here reported as stale.\n\n' >&2
 	return 0
@@ -283,18 +285,18 @@ EOF
 
 if [ "$pos_rc" -eq 2 ]; then
 	printf 'install-timer: %s is not a readable git checkout, so there is no way to say what code the unit would run.\n' \
-		"$FACTORY_ROOT" >&2
+		"$FACTORY_HARNESS" >&2
 	describe_installed
-	printf '  Point the install at a real checkout:\n' >&2
-	printf '      FACTORY_ROOT=<checkout> %s --install\n' "$0" >&2
+	printf '  Point the install at a real checkout of the harness:\n' >&2
+	printf '      FACTORY_HARNESS=<checkout> %s --install\n' "$0" >&2
 	exit 1
 fi
 
 if [ "$pos_rc" -eq 3 ] && [ "$FORCE" != "1" ]; then
-	printf 'install-timer: refusing to install: %s cannot be resolved in %s.\n' "$pos_base" "$FACTORY_ROOT" >&2
+	printf 'install-timer: refusing to install: %s cannot be resolved in %s.\n' "$pos_base" "$FACTORY_HARNESS" >&2
 	printf '  Nothing here can say whether this tree is merged code, and installing it arms a timer\n' >&2
 	printf '  running code nobody has checked against the trunk. Fetch the trunk or move the tree:\n\n' >&2
-	printf '      git -C %s fetch origin %s\n\n' "$FACTORY_ROOT" "${FACTORY_BASE:-main}" >&2
+	printf '      git -C %s fetch origin %s\n\n' "$FACTORY_HARNESS" "${FACTORY_BASE:-main}" >&2
 	describe_installed
 	printf '  --force installs it anyway.\n' >&2
 	exit 1
@@ -304,7 +306,7 @@ if [ "$pos_rc" -eq 0 ] && { [ "$pos_behind" != "0" ] || [ "$pos_ahead" != "0" ];
 	[ "$FORCE" != "1" ]; then
 	printf 'install-timer: refusing to install a tree that is not the trunk.\n' >&2
 	printf '  %s is at %s on %s: %s %s behind %s' \
-		"$FACTORY_ROOT" "$pos_sha" "$pos_branch" "$pos_behind" "$(factory_plural "$pos_behind")" \
+		"$FACTORY_HARNESS" "$pos_sha" "$pos_branch" "$pos_behind" "$(factory_plural "$pos_behind")" \
 		"$pos_base" >&2
 	[ "$pos_ahead" = "0" ] || printf ', %s ahead of it' "$pos_ahead" >&2
 	[ "$pos_dirty" = "0" ] || printf ', %s uncommitted' "$pos_dirty" >&2
@@ -314,13 +316,13 @@ if [ "$pos_rc" -eq 0 ] && { [ "$pos_behind" != "0" ] || [ "$pos_ahead" != "0" ];
 		# A pure fast-forward exists here, so name it. This is the only arm allowed to: a fork has no
 		# fast-forward, and sending an operator to a command git refuses is its own wasted evening.
 		printf '      git -C %s fetch origin %s && git -C %s merge --ff-only %s\n\n' \
-			"$FACTORY_ROOT" "${FACTORY_BASE:-main}" "$FACTORY_ROOT" "$pos_base" >&2
+			"$FACTORY_HARNESS" "${FACTORY_BASE:-main}" "$FACTORY_HARNESS" "$pos_base" >&2
 	else
 		printf '  This tree'"'"'s branch (%s) holds %s %s %s does not have, so a fast-forward is\n' \
 			"$pos_branch" "$pos_ahead" "$(factory_plural "$pos_ahead")" "$pos_base" >&2
 		printf '  not available. Merge it or rebase it onto the trunk, or arm a checkout the trunk\n' >&2
 		printf '  already contains:\n\n' >&2
-		printf '      FACTORY_ROOT=<checkout> %s --install\n\n' "$0" >&2
+		printf '      FACTORY_HARNESS=<checkout> %s --install\n\n' "$0" >&2
 	fi
 	printf '  Then re-run --install. --force installs this tree anyway, and says so in the journal.\n' >&2
 	exit 1
@@ -330,8 +332,8 @@ if [ "$FORCE" = "1" ] && { [ "$pos_rc" -eq 3 ] || [ "$pos_behind" != "0" ] || [ 
 	# The override is for the deliberate case, and the journal is where the next reader looks for what
 	# was overridden. A force that leaves no trace is a way of lying to whoever finds it later.
 	printf 'install-timer: --force given, installing %s at %s (%s) even though it is not the trunk.\n' \
-		"$FACTORY_ROOT" "$pos_sha" "$pos_branch"
-	log_event "TIMER-FORCED $NAME code=$pos_sha branch=$pos_branch behind=$pos_behind ahead=$pos_ahead dirty=$pos_dirty base=$pos_base repo=$FACTORY_ROOT"
+		"$FACTORY_HARNESS" "$pos_sha" "$pos_branch"
+	log_event "TIMER-FORCED $NAME code=$pos_sha branch=$pos_branch behind=$pos_behind ahead=$pos_ahead dirty=$pos_dirty base=$pos_base repo=$FACTORY_HARNESS target=$FACTORY_ROOT"
 fi
 
 # Where the binaries actually are. A systemd unit does not read a shell profile, so an `opencode`
@@ -384,6 +386,7 @@ render() {
 	# One template for both modes of path substitution: `@REPO@` and friends are replaced here rather
 	# than by `envsubst`, so this script has no dependency outside coreutils.
 	sed -e "s#@REPO@#$(sed_replacement "$FACTORY_ROOT")#g" \
+		-e "s#@HARNESS@#$(sed_replacement "$FACTORY_HARNESS")#g" \
 		-e "s#@NAME@#$(sed_replacement "$NAME")#g" \
 		-e "s#@PATHS@#$(sed_replacement "$BIN_DIRS:/usr/local/bin:/usr/bin:/bin")#g" \
 		-e "s#@INTERVAL@#$(sed_replacement "$INTERVAL")#g" \
@@ -408,7 +411,7 @@ service_unit=$(cat <<'UNIT' | render
 # sentence to hold.
 [Unit]
 Description=@NAME@ delivery supervisor (one pass)
-Documentation=file:@REPO@/docs/factory.md
+Documentation=file:@HARNESS@/docs/factory.md
 # No network-online.target here, and that is a correction rather than an omission. `Wants=` on a unit
 # the manager cannot load does nothing, and the user manager cannot load this one: measured 5 Nov,
 # `systemctl --user status network-online.target` answers `Unit network-online.target could not be
@@ -421,7 +424,9 @@ Documentation=file:@REPO@/docs/factory.md
 [Service]
 Type=oneshot
 WorkingDirectory=@REPO@
-ExecStart=@REPO@/factory/factory.sh
+Environment=FACTORY_ROOT=@REPO@
+Environment=FACTORY_HARNESS=@HARNESS@
+ExecStart=@HARNESS@/factory/factory.sh
 # The unit reads none of your shell profile: name the directories gh and opencode live in.
 Environment=PATH=@PATHS@
 Environment=FACTORY_REVIEWER=@REVIEWER@
@@ -447,7 +452,7 @@ Environment=FACTORY_SERVICE_UNIT=@NAME@.service
 # seconds on Error: Agent not found: "@AGENT@", each one logged as a bare exit=1, because no agent is
 # defined out there. factory.sh sets the same variable at the call site too, so a pass started from a
 # terminal is correct as well; this line is the half a person can see in systemctl cat.
-Environment=PWD=@REPO@
+Environment=PWD=@HARNESS@
 # Two numbers, because they bound two different moments. Until 8 Nov they were one token, and that
 # coupling is why the queue went silent for 1 h 07 min while every status command said it was fine --
 # `docs/factory.md` carries the measurement and the reasoning; the short version is below.
@@ -585,12 +590,17 @@ if [ "$DRY_RUN" = "1" ]; then
 	printf 'DRY-RUN  write %s\n%s\n' "$TIMER" "$timer_unit"
 	printf 'DRY-RUN  systemctl --user daemon-reload && systemctl --user enable --now %s.timer\n' "$NAME"
 	printf 'DRY-RUN  (or, if the timer is already active) systemctl --user daemon-reload && systemctl --user restart %s.timer\n' "$NAME"
-	if [ "$inst_rc" -eq 0 ] && [ "$inst_tree" != "$FACTORY_ROOT" ]; then
+	if [ "$inst_rc" -eq 0 ] && [ "$inst_tree" != "$FACTORY_HARNESS" ]; then
 		# The part of an install that is not a file write: it moves which checkout the loop runs, and
-		# with it the journal, the HALT path, and the tree a tick may dirty (#260). Printed here too,
-		# because a dry run exists to show what the real one would do.
-		printf 'DRY-RUN  the loop MOVES from %s to %s\n' "$inst_tree" "$FACTORY_ROOT"
-		printf 'DRY-RUN   (journal, HALT path, and the working tree a tick may dirty both move with it)\n'
+		# with it the journal, the ledger, the run lock and the HALT path (#260) -- every one of those
+		# lives beside the code, in `$FACTORY_DIR`, which is why a code move moves them. What a code
+		# move does NOT move is where the ticks work: the per-unit working trees derive from
+		# FACTORY_ROOT, the target (H-0407). Printed here too, because a dry run exists to show what
+		# the real one would do.
+		printf 'DRY-RUN  the loop MOVES from %s to %s\n' "$inst_tree" "$FACTORY_HARNESS"
+		printf 'DRY-RUN   (H-0407: the journal, ledger, run lock, worktree claims and the HALT path all\n'
+		printf 'DRY-RUN   live beside the harness, so they move with THIS move; the per-unit working\n'
+		printf 'DRY-RUN   trees derive from FACTORY_ROOT, the target, and stay where the target puts them)\n'
 	fi
 	exit 0
 fi
@@ -634,25 +644,29 @@ if [ "$linger" = "no" ]; then
 fi
 
 # Which checkout the loop runs is part of what an install *does*, and it is operator-visible in three
-# places that all go quiet at the same moment: the journal path (it lives inside the tree), the HALT
-# path, and the working tree a tick may dirty. On 10 Nov it happened as the side effect of clearing an
+# places that all go quiet at the same moment: the journal path (it lives beside the code, in the
+# harness tree), the HALT path, and the code a tick reads. The working trees a tick may dirty are the
+# one thing that does NOT follow -- they derive from FACTORY_ROOT, the target (H-0407). On 10 Nov it
+# happened as the side effect of clearing an
 # install refusal -- `TIMER-INSTALLED` at 13:39:05Z in one tree's log, the next `PASS` in another
 # tree's -- and the operator reading the old path had nothing in that file explaining the silence.
 # So the move gets its own journal line and its own sentence in the block a person reads.
-if [ "$inst_rc" -eq 0 ] && [ "$inst_tree" != "$FACTORY_ROOT" ]; then
-	log_event "UNIT-TREE old=$inst_tree new=$FACTORY_ROOT unit=$NAME"
+if [ "$inst_rc" -eq 0 ] && [ "$inst_tree" != "$FACTORY_HARNESS" ]; then
+	log_event "UNIT-TREE old=$inst_tree new=$FACTORY_HARNESS unit=$NAME"
 fi
-log_event "TIMER-INSTALLED $NAME interval=$INTERVAL repo=$FACTORY_ROOT"
+log_event "TIMER-INSTALLED $NAME interval=$INTERVAL repo=$FACTORY_HARNESS target=$FACTORY_ROOT"
 printf '\nInstalled:\n  %s\n  %s\n\n' "$SERVICE" "$TIMER"
-if [ "$inst_rc" -eq 0 ] && [ "$inst_tree" != "$FACTORY_ROOT" ]; then
+if [ "$inst_rc" -eq 0 ] && [ "$inst_tree" != "$FACTORY_HARNESS" ]; then
 	# What is asserted here is only what the unit file says: the path it execs changes. Not that the
 	# old path is a readable checkout -- an ExecStart aimed at a directory git cannot read, or at a
 	# second repository that carries this same `factory/factory.sh` shape, is still a path the timer
 	# ran, and that is the fact the operator needs before the old journal goes quiet.
 	printf '  The loop MOVES. The unit installed today execs:\n    %s\n' "$inst_tree"
-	printf '  this install replaces it with one that execs:\n    %s\n\n' "$FACTORY_ROOT"
-	printf '  That changes the journal, the HALT path, and which working tree a tick may dirty. An\n'
-	printf '  operator tailing the old journal will watch a healthy queue go silent at this moment:\n\n'
+	printf '  this install replaces it with one that execs:\n    %s\n\n' "$FACTORY_HARNESS"
+	printf '  That changes the journal, the ledger, the run lock, the HALT path and the code every\n'
+	printf '  tick reads -- all five live beside the harness, which is why a code move carries them.\n'
+	printf '  The working trees a tick may dirty stay with the target (H-0407). An operator tailing\n'
+	printf '  the old journal will watch a healthy queue go silent at this moment:\n\n'
 	printf '    %s\n\n' "$inst_tree/factory/log/supervisor.log"
 fi
 systemctl --user list-timers "$NAME.timer" --no-pager 2>&1 | sed -n '1,3p'

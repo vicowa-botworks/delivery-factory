@@ -86,6 +86,16 @@ HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # ambient would silently retune every reach arm.
 unset FACTORY_TICK_UNIT FACTORY_TICK_BRANCH FACTORY_LOG FACTORY_ID_MAX_AGE \
 	FACTORY_MCP_FENCE OPENCODE_CONFIG_CONTENT
+# H-0407: the suite certifies the harness tree, and since H-0407 the default REFUSES an
+# implicit self-supervision -- so the suite says it explicitly, the accepted form for a
+# harness-owning tool. The value replicates the pre-split default (`_factory_main` over
+# `$HERE/..`, worktree answered with its main checkout) so every leg that re-sources with
+# its own FACTORY_DIR sees exactly what it saw before: FACTORY_ROOT was already set by the
+# first source pre-split too, and `${FACTORY_ROOT:-}` never recomputed it.
+: "${FACTORY_ROOT:=$(git -C "$HERE/.." worktree list --porcelain 2>/dev/null \
+	| awk '/^worktree /{print substr($0,10); exit}')}"
+: "${FACTORY_ROOT:=$(cd -- "$HERE/.." && pwd)}"
+export FACTORY_ROOT
 # shellcheck source=./common.sh
 # shellcheck disable=SC1091
 . "$HERE/common.sh"
@@ -14637,18 +14647,230 @@ claim_leg 'a stale tree can still be taken off' install_remove_never_refused
 # and the two here are in opposite states, so a call site that reaches for the tree the *script* came
 # from goes red on one of these two legs rather than silently agreeing forever.
 install_judges_the_execd_tree() {
-	# FACTORY_ROOT stale, the script's own tree current: must refuse.
-	pos_install "$pos_stale" "$pos_current" --install
-	[ "$pos_rc" -ne 0 ] || {
-		pos_say 'install judged the script'"'"'s own tree: a stale FACTORY_ROOT installed:'
-		pos_say "$pos_out"; return 1; }
-	# FACTORY_ROOT current, the script's own tree stale: must install.
+	# H-0407: `ExecStart=@HARNESS@/factory/factory.sh` runs the HARNESS tree, so that is the tree
+	# this leg judges current -- and FACTORY_ROOT is only the checkout the ticks fetch for
+	# themselves. A stale harness must therefore refuse however current its target is...
 	pos_install "$pos_current" "$pos_stale" --install
+	[ "$pos_rc" -ne 0 ] || {
+		pos_say 'install armed a stale harness tree because the target it names is current:'
+		pos_say "$pos_out"; return 1; }
+	# ...and a stale target must install however stale, because what boots is the harness.
+	pos_install "$pos_stale" "$pos_current" --install
 	[ "$pos_rc" -eq 0 ] || {
-		pos_say "install refused a current tree because the harness it was run from is old:"; pos_say "$pos_out"; return 1; }
+		pos_say "install refused a current harness tree because its target was behind:"; pos_say "$pos_out"; return 1; }
 	return 0
 }
 claim_leg 'install judges the ExecStart tree' install_judges_the_execd_tree
+
+# H-0407: two trees are only a split if the state box and the working trees go to different
+# places, and which tree a file lives in is exactly the claim this suite was caught printing
+# backwards -- the banner these legs replace said the journal and `HALT` follow `FACTORY_ROOT`
+# and "not with a code move", while `common.sh` has always resolved them under `$FACTORY_DIR`,
+# beside the code. Read that way the install notice would have sent an operator to a journal
+# that the very install being described had just moved: #260's misdirection, re-issued as its
+# own repair. Both plants are real checkouts, because the split discriminates on git-ness.
+split_tree_plant() { # split_tree_plant <name> [common.sh] -> the box; harness/ and target/ inside it
+	local box src=${2:-$HERE/common.sh}
+	box=$(mktemp -d "$work/split-$1-XXXX") || return 1
+	mkdir -p "$box/harness/factory" "$box/target" || return 1
+	cp "$src" "$box/harness/factory/common.sh" || return 1
+	cp "$HERE/escalation-label.sh" "$box/harness/factory/" || return 1
+	git init -q "$box/harness" >/dev/null 2>&1 || return 1
+	git -C "$box/harness" -c user.email=fixture@invalid -c user.name=fixture \
+		commit -q --allow-empty -m seed || return 1
+	git init -q "$box/target" >/dev/null 2>&1 || return 1
+	git -C "$box/target" -c user.email=fixture@invalid -c user.name=fixture \
+		commit -q --allow-empty -m seed || return 1
+	printf '%s\n' "$box"
+}
+
+split_state_box_beside_the_code() { # [common.sh] -- the control hands it a mutated copy
+	local box h t out src=${1:-$HERE/common.sh}
+	box=$(split_tree_plant box "$src") || { pos_say 'the two-tree plant could not be written'; return 1; }
+	h=$box/harness t=$box/target
+	# The defaults as a bare reader standing in the TARGET resolves them: no knob set, the
+	# shipped files sourced, the seven paths printed in the order the assertions read them.
+	if ! out=$(cd -- "$t" && env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS \
+		-u FACTORY_TREES -u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		-u FACTORY_AT_RISK \
+		bash -c '. "'"$h"'/factory/common.sh" >/dev/null 2>&1 || exit 3
+		printf "%s\n" "$FACTORY_HARNESS" "$FACTORY_ROOT" "$FACTORY_LOG" "$FACTORY_LEDGER" \
+			"$FACTORY_RUN" "$FACTORY_HALT" "$FACTORY_TREES"'); then
+		pos_say 'sourcing the shipped common.sh from a planted target did not answer'
+		pos_say "got: ${out:-<nothing>}"
+		return 1
+	fi
+	local -a v=()
+	mapfile -t v <<<"$out"
+	[ "${v[0]:-}" = "$h" ] || { pos_say "FACTORY_HARNESS is not the code tree: ${v[0]:-<none>}"; return 1; }
+	[ "${v[1]:-}" = "$t" ] || {
+		pos_say 'the tree the reader is standing in is not the target it resolves:'
+		pos_say "expected $t, got ${v[1]:-<none>}"; return 1; }
+	# The state box: every one of the four beside the code, none of it inside the target.
+	[ "${v[2]:-}" = "$h/factory/log" ] || {
+		pos_say "the journal is not beside the code: ${v[2]:-<none>}"; return 1; }
+	[ "${v[3]:-}" = "$h/factory/ledger" ] || {
+		pos_say "the ledger is not beside the code: ${v[3]:-<none>}"; return 1; }
+	[ "${v[4]:-}" = "$h/factory/run" ] || {
+		pos_say "the run lock is not beside the code: ${v[4]:-<none>}"; return 1; }
+	[ "${v[5]:-}" = "$h/factory/HALT" ] || {
+		pos_say "the HALT marker is not beside the code: ${v[5]:-<none>}"; return 1; }
+	case "${v[2]}" in
+	"$t"/*)
+		pos_say 'the journal resolves inside the target tree while the install notice says'
+		pos_say 'it moves with the code -- one of the two is a lie the operator follows:'
+		pos_say "got ${v[2]}"; return 1 ;;
+	esac
+	# The working trees are the one thing that follows the target: `<target's parent>/wt`.
+	[ "${v[6]:-}" = "$box/wt" ] || {
+		pos_say "the working trees do not derive from the target: ${v[6]:-<none>}"; return 1; }
+	case "${v[6]}" in
+	"$h"/*)
+		pos_say 'the working trees nest under the harness, so a code move would move the'
+		pos_say 'trees a tick may dirty: the target owns them'; return 1 ;;
+	esac
+	return 0
+}
+claim_leg 'state box lives by the code, trees by the target' split_state_box_beside_the_code
+
+# The control that says the leg above is a reading and not a recital: point the journal at the
+# TARGET -- the sentence these legs were written to retire -- and the leg has to go red. The
+# mutation is pinned by its own line read, because a `sed` that matches nothing turns every
+# control in this suite into a comment.
+split_state_box_control_red() {
+	local mut=$work/split-ctrl-common.sh line
+	line=$(grep -nF 'FACTORY_LOG=${FACTORY_LOG:-$FACTORY_DIR/log}' "$HERE/common.sh" |
+		cut -d: -f1 | head -n 1)
+	[ -n "$line" ] || {
+		pos_say 'the default line this control aims at is not in common.sh any more; the'
+		pos_say 'control is aimed at nothing and the leg above it reads untested.'; return 1; }
+	sed "${line}s#\$FACTORY_DIR/log#\$\{FACTORY_ROOT:-\$FACTORY_DIR\}/log#" \
+		"$HERE/common.sh" >"$mut" || return 1
+	if cmp -s "$mut" "$HERE/common.sh"; then
+		pos_say "the control mutated nothing at common.sh:$line, so nothing could go red:"
+		pos_say 'the sed pattern and the shipped default have parted'; return 1
+	fi
+	if split_state_box_beside_the_code "$mut" >/dev/null 2>&1; then
+		pos_say 'the leg passed with the journal resolved under the TARGET: it is not reading'
+		pos_say 'the shipped default, and no wording of the banner would ever fail it again'
+		return 1
+	fi
+	return 0
+}
+claim_leg 'control: a journal aimed at the target goes red' split_state_box_control_red
+
+# Four arms of the H-0407 default, on the same two plants: the harness is never its own target
+# by silence; a person standing in a watched checkout still gets that checkout; an operator who
+# aims the factory at the harness deliberately is obeyed; and a bare non-git fixture -- the
+# shape most of this suite plants -- keeps the default it has always had, because refusing
+# there would rewrite the fixtures' own premise rather than guard a real checkout.
+split_refuses_implicit_self_target() { # [common.sh] -- the control hands it a mutated copy
+	local box h t out rc bare src=${1:-$HERE/common.sh}
+	box=$(split_tree_plant ref "$src") || { pos_say 'the two-tree plant could not be written'; return 1; }
+	h=$box/harness t=$box/target
+	(cd -- "$h" && env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS -u FACTORY_TREES \
+		-u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		bash ./factory/escalation-label.sh) >"$box/a1" 2>&1
+	rc=$?
+	[ "$rc" -eq 2 ] || {
+		pos_say 'a bare reader inside the harness did not refuse with exit 2 (it gave'" $rc'):"
+		pos_say "$(cat "$box/a1")"; return 1; }
+	grep -qF 'is the harness itself' "$box/a1" || {
+		pos_say 'the refusal does not say what it refused:'; pos_say "$(cat "$box/a1")"; return 1; }
+	grep -qF 'FACTORY_ROOT=' "$box/a1" || {
+		pos_say 'the refusal prints a wall instead of the knob to set:'
+		pos_say "$(cat "$box/a1")"; return 1; }
+	(cd -- "$t" && env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS -u FACTORY_TREES \
+		-u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		bash "$h/factory/escalation-label.sh") >"$box/a2" 2>&1
+	rc=$?
+	{ [ "$rc" -eq 0 ] && [ -s "$box/a2" ]; } || {
+		pos_say 'standing in a watched checkout refused anyway (rc='"$rc"'):'
+		pos_say "$(cat "$box/a2")"; return 1; }
+	out=$(FACTORY_ROOT="$h" env -u FACTORY_DIR -u FACTORY_HARNESS -u FACTORY_TREES \
+		-u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		bash "$h/factory/escalation-label.sh" 2>&1)
+	rc=$?
+	[ "$rc" -eq 0 ] || {
+		pos_say 'an EXPLICIT FACTORY_ROOT naming the harness was refused; watched is a'
+		pos_say 'decision, and a decision said out loud must be obeyed (rc='"$rc"'):'
+		pos_say "$out"; return 1; }
+	bare=$(mktemp -d "$work/split-bare-XXXX") || return 1
+	mkdir -p "$bare/factory" && cp "$src" "$bare/factory/common.sh" || return 1
+	out=$(cd -- "$bare" && env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS \
+		-u FACTORY_TREES -u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		-u FACTORY_AT_RISK \
+		bash -c '. "'"$bare"'/factory/common.sh" >/dev/null 2>&1 || exit 3
+		printf "%s %s\n" "$FACTORY_ROOT" "$FACTORY_LOG"')
+	rc=$?
+	[ "$rc" -eq 0 ] || {
+		pos_say 'a bare non-git fixture was refused a target (rc='"$rc"'), which rewrites'
+		pos_say "every fixture above it: $out"; return 1; }
+	[ "$out" = "$bare $bare/factory/log" ] || {
+		pos_say 'the bare fixture lost its old default -- the plant is the world there:'
+		pos_say "expected '$bare $bare/factory/log', got '$out'"; return 1; }
+	return 0
+}
+claim_leg 'the default refuses to supervise its own harness' split_refuses_implicit_self_target
+
+# ...and the control that says that refusal is load-bearing in BOTH directions: invert the
+# polarity of the guard -- refuse only when the knob was set explicitly -- and the leg has to go
+# red. A leg that stayed green over that could not tell "the harness is never its own target by
+# silence" from "the harness is never its own target at all", which is the difference between a
+# guard and a wall.
+split_self_target_control_red() {
+	local mut=$work/split-ref-ctrl-common.sh line
+	line=$(grep -nF 'if [ -z "$_factory_root_explicit" ]' "$HERE/common.sh" | cut -d: -f1 | head -n 1)
+	[ -n "$line" ] || {
+		pos_say 'the guard line this control aims at is not in common.sh any more, so the'
+		pos_say 'control aims at nothing and the leg above it reads untested.'; return 1; }
+	sed "${line}s/ -z / -n /" "$HERE/common.sh" >"$mut" || return 1
+	if cmp -s "$mut" "$HERE/common.sh"; then
+		pos_say "the control mutated nothing at common.sh:$line, so nothing could go red:"
+		pos_say 'the sed pattern and the shipped guard have parted'; return 1
+	fi
+	if split_refuses_implicit_self_target "$mut" >/dev/null 2>&1; then
+		pos_say 'the leg passed with the guard inverted: it does not watch WHICH arm refuses, so'
+		pos_say 'any future rewrite of the guard reads green whatever it decides.'
+		return 1
+	fi
+	return 0
+}
+claim_leg 'control: an inverted self-target guard goes red' split_self_target_control_red
+# ...and the arm the plant above cannot express: the reader run from a directory that is no git
+# checkout at all. That is where `set -euo pipefail` bites -- a command substitution whose
+# pipeline fails ends the script at the ASSIGNMENT, before the guard's own `if`, so the refusal
+# this branch exists to add never runs and the operator is handed a bare 128 that prints nothing.
+# Measured on fa0c3587: `main` answered that same call with the label. rc alone cannot tell 2
+# from 128, so the grep on the wording is the load-bearing half -- and the fixture's premise is
+# asserted first, because a probe dir sitting under a checkout would exercise the other arm and
+# read green while this one went untested.
+split_refuses_from_a_non_git_dir() {
+	local box h rc nogit
+	box=$(split_tree_plant ref) || { pos_say 'the two-tree plant could not be written'; return 1; }
+	h=$box/harness
+	nogit=$(mktemp -d "$work/split-nogit-XXXX") || return 1
+	if git -C "$nogit" rev-parse --git-dir >/dev/null 2>&1; then
+		pos_say "the probe dir $nogit sits INSIDE a git checkout, so this leg would exercise"
+		pos_say 'the standing-in-a-target arm and report green with the non-git arm untested.'
+		return 1
+	fi
+	(cd -- "$nogit" && env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS -u FACTORY_TREES \
+		-u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		bash "$h/factory/escalation-label.sh") >"$box/a3" 2>&1
+	rc=$?
+	[ "$rc" -eq 2 ] || {
+		pos_say 'a bare reader with no git anywhere above it did not refuse with exit 2 (it gave'
+		pos_say "$rc -- 128 means set -e killed the script at the assignment, so the refusal"
+		pos_say 'never ran and nothing at all was printed):'; pos_say "$(cat "$box/a3")"; return 1; }
+	grep -qF 'is the harness itself' "$box/a3" || {
+		pos_say 'the non-git arm ended on a status instead of the refusal. The words are the half'
+		pos_say 'that proves the guard ran, because rc cannot separate 2 from 128:'
+		pos_say "$(cat "$box/a3")"; return 1; }
+	return 0
+}
+claim_leg 'a bare reader outside any checkout still refuses' split_refuses_from_a_non_git_dir
+
 
 install_nobase_refuses() {
 	pos_install "$pos_nobase" "$pos_nobase" --install
@@ -15046,6 +15268,20 @@ unit_records_its_own_name() {
 		pos_say 'the recorded name appears somewhere other than its own line, so removing that line'
 		pos_say 'would not remove the value from the unit:'; pos_say "$b"; return 1
 	fi
+	# The `@REPO@`/`@HARNESS@` mapping, pinned. Every leg above renders with root == harness, so
+	# the two substitutions are indistinguishable in them: swap them in install-timer.sh's render()
+	# and the whole suite stays green while every installed timer execs the target and watches the
+	# harness. Two DISTINCT trees plus one grep per side is the only thing that separates them, and
+	# each message names which side of the pair it is holding.
+	local t2
+	t2=$(pos_clone splittarget) || return 1
+	pos_install "$t2" "$pos_current" --install --dry-run >/dev/null 2>&1
+	printf '%s' "$pos_out" | grep -qxF "ExecStart=$pos_current/factory/factory.sh" || {
+		pos_say 'the rendered unit does not exec the HARNESS tree it was installed from:'
+		pos_say "$pos_out"; return 1; }
+	printf '%s' "$pos_out" | grep -qxF "Environment=FACTORY_ROOT=$t2" || {
+		pos_say 'the rendered unit does not point Environment=FACTORY_ROOT at the TARGET tree:'
+		pos_say "$pos_out"; return 1; }
 	return 0
 }
 claim_leg 'the unit records the name it was installed under' unit_records_its_own_name
@@ -15308,6 +15544,19 @@ install_move_is_said() {
 		pos_say 'an install that moves the loop does not say so:'; pos_say "$pos_out"; return 1; }
 	printf '%s' "$pos_out" | grep -qF 'the HALT path' || {
 		pos_say 'the move notice omits what moves with the tree:'; pos_say "$pos_out"; return 1; }
+	# H-0407: the clause that says WHERE that state lives, and the absence of the sentence this
+	# head first shipped -- "the journal, HALT path and dirty tree follow FACTORY_ROOT ... not with
+	# a code move" -- which is backwards from `common.sh`, where every one of them resolves under
+	# `$FACTORY_DIR`, beside the code. An operator following the false sentence tails a journal the
+	# install they just ran has moved: #260's silence with a printed alibi.
+	printf '%s' "$pos_out" | grep -qF 'live beside the harness' || {
+		pos_say 'the move notice does not say where the state it names lives:'; pos_say "$pos_out"; return 1; }
+	if printf '%s' "$pos_out" | grep -qF 'follow FACTORY_ROOT'; then
+		pos_say 'the move notice promises the journal travels with the TARGET again, which is'
+		pos_say 'the opposite of what common.sh resolves, and would leave a healthy-looking'
+		pos_say 'install writing a journal nobody is told to look in:'
+		pos_say "$pos_out"; return 1
+	fi
 	jline=$(grep -h 'UNIT-TREE' "$pos_log/supervisor.log" 2>/dev/null | tail -n 1 || true)
 	printf '%s' "$jline" | grep -qF "UNIT-TREE old=$pos_stale" || {
 		pos_say 'the move is not in the journal, where the next reader looks:'
@@ -15324,6 +15573,8 @@ install_move_is_said() {
 	pos_install "$pos_current" "$pos_current" --install --name posfix-factory --dry-run
 	printf '%s' "$pos_out" | grep -qF 'the loop MOVES from' || {
 		pos_say 'a dry run that would move the loop is silent about it:'; pos_say "$pos_out"; return 1; }
+	printf '%s' "$pos_out" | grep -qF 'live beside the harness' || {
+		pos_say 'the dry run shows the move without showing what it carries:'; pos_say "$pos_out"; return 1; }
 	after=$(find "$pos_u" -type f 2>/dev/null | sort)
 	[ "$before" = "$after" ] || {
 		pos_say 'the dry run wrote into the unit directory:'; pos_say "$after"; return 1; }
@@ -23124,6 +23375,95 @@ lm_leg_recorded_beats_derived() {
 }
 claim_leg 'log-move: a named directory beats the inferred one' lm_leg_recorded_beats_derived
 
+# H-0407 moved `root=` off the code tree: on a split install it names the TARGET, so a PASS line that
+# names no directory would derive `<target>/factory/log` -- a journal the pass never wrote, printed as
+# `old=` on a LOG-MOVED line and believed. The pass line names its own directory now, so the answer is
+# a record, and the only lines left that need deriving are ones a machine wrote before the split, where
+# `root=` really was the code tree.
+cat >"$lm_dir/split-pass" <<'F'
+2026-11-12T10:00:01.000000+00:00 h factory.sh[1]: 2026-11-12T10:00:01Z PASS units=3 dry=0 budget=5400s root=/watched/target repo=/harness/checkout log=/harness/checkout/factory/log trees=/watched/wt
+F
+cat >"$lm_dir/split-pass-stale" <<'F'
+2026-11-12T10:00:00.500000+00:00 h factory.sh[1]: 2026-11-12T10:00:00Z PASS units=1 dry=0 budget=5400s root=/old/harness trees=/old/wt
+2026-11-12T10:00:01.000000+00:00 h factory.sh[1]: 2026-11-12T10:00:01Z PASS units=3 dry=0 budget=5400s root=/watched/target repo=/harness/checkout log=/harness/checkout/factory/log trees=/watched/wt
+F
+
+# What the arm answers when the two trees are apart, and the wrong answer it must not give.
+lm_leg_split_pass_names_its_own_log() {
+	local shape='' wrong=''
+	shape=$(lm_fields "$(lm_ask "$lm_dir/split-pass" 1)")
+	wrong="/watched/target/factory/log|2026-11-12T10:00:01Z|derived"
+	[ "$shape" = "/harness/checkout/factory/log|2026-11-12T10:00:01Z|recorded" ] || {
+		lm_say "a split pass line answered: $shape"
+		lm_say "want the log= directory with how=recorded."
+		lm_say "If this answers $wrong the reader has taken the TARGET for the code"
+		lm_say "tree, which is the reading H-0407 retired: it prints an old= path that"
+		lm_say "journal never existed, and misses a move of the one that did."; return 1; }
+	# The newest line still wins the record slot, so a stale pre-split PASS above the split one cannot
+	# drag the answer back to a derived path: this is the same journal with an older line under it.
+	[ "$(lm_fields "$(lm_ask "$lm_dir/split-pass-stale" 1)")" = "$shape" ] || {
+		lm_say "adding an older root=-only PASS line under the split one changed the answer to"
+		lm_say "$(lm_fields "$(lm_ask "$lm_dir/split-pass-stale" 1)") -- a named record has to"
+		lm_say "outrank an inference however deep the inference sits."; return 1; }
+	lm_say "a split pass line names its own journal, and the record outranks the older root=" >&2
+	return 0
+}
+claim_leg 'log-move: a split PASS line answers with its own directory' lm_leg_split_pass_names_its_own_log
+
+# The control that says the leg above reads the shipped parser rather than the fixture: mute the
+# `log=` read in a copy of common.sh. A mutation that matches nothing is the same comment as no
+# control at all, so the aim line is pinned first.
+lm_control_split_leg_red_without_the_log_read() {
+	local mut=$work/lm-log-ctrl-common.sh line shape=''
+	line=$(grep -nF 'dir = pass_field(mark, "log")' "$HERE/common.sh" | cut -d: -f1 | head -n 1)
+	[ -n "$line" ] || {
+		lm_say 'the log= read this control aims at is not in common.sh any more, so the'
+		lm_say 'control aims at nothing and the leg above it reads untested.'; return 1; }
+	sed "${line}s/\"log\"/\"logx\"/" "$HERE/common.sh" >"$mut" || return 1
+	if cmp -s "$mut" "$HERE/common.sh"; then
+		lm_say "the control mutated nothing at common.sh:$line, so nothing could go red:"
+		lm_say 'the sed pattern and the shipped read have parted'; return 1
+	fi
+	shape=$(LM_FIXTURE="$lm_dir/split-pass" LM_DUMB=0 LM_UNIT=plrev260b.service FACTORY_ROOT="$work" \
+		PATH="$lm_bin:$PATH" bash -c '. "$1" 1>/dev/null
+			factory_service_unit() { printf "%s\n" "$LM_UNIT"; }
+			factory_log_journal_tail | factory_log_prev_record | tr "\t" "|"' _ "$mut" 2>/dev/null)
+	[ "$shape" != "/harness/checkout/factory/log|2026-11-12T10:00:01Z|recorded" ] || {
+		lm_say 'the leg stayed green with the log= read muted, so it never read the field;'
+		lm_say 'any rewrite of the parser reads green whatever it answers.'; return 1; }
+	lm_say "with the log= read muted the parser answers ${shape:-<no record>} instead: the leg is a gate" >&2
+	return 0
+}
+claim_leg 'control: muting the log= read goes red' lm_control_split_leg_red_without_the_log_read
+
+# And the emitter half. The two legs above replay transcripts; a transcript is written by this suite,
+# so nothing in them proves the shipped pass line CARRIES the field. One grep at the emitter, and one
+# at the reader: drop either and this goes red, which is the pair the derived path needs to stay dead.
+lm_leg_emitter_carries_both_trees() {
+	local emitter='' reader=''
+	emitter=$(grep -n 'log_event "PASS units=' "$HERE/factory.sh" | head -n 1)
+	[ -n "$emitter" ] || {
+		lm_say 'the PASS emitter is not in factory.sh any more; this leg has no subject.'; return 1; }
+	printf '%s\n' "$emitter" | grep -qF 'log=$FACTORY_LOG' || {
+		lm_say "the shipped PASS line no longer names its own journal directory:"
+		lm_say "  $emitter"
+		lm_say "Under the split a line without log= is read as root=/factory/log, and root= is the"
+		lm_say "TARGET: every LOG-MOVED old= on a split install would name a journal that never"
+		lm_say "existed. That is the #260 sentence, aimed at the wrong file."; return 1; }
+	printf '%s\n' "$emitter" | grep -qF 'repo=$FACTORY_HARNESS' || {
+		lm_say "the shipped PASS line no longer names the code tree it ran:"
+		lm_say "  $emitter"
+		lm_say "Two trees, and a reader that can only see one of them cannot tell which one moved."; return 1; }
+	reader=$(grep -nF 'dir = pass_field(mark, "log")' "$HERE/common.sh" | head -n 1)
+	[ -n "$reader" ] || {
+		lm_say 'common.sh no longer reads a log= field off a PASS line, so the emitter above'
+		lm_say 'writes a field nobody looks at -- and the parser is back to deriving the target.'
+		return 1; }
+	lm_say "the pass line carries repo= and log=, and common.sh reads the field back" >&2
+	return 0
+}
+claim_leg 'log-move: the pass line emits both trees and its own directory' lm_leg_emitter_carries_both_trees
+
 lm_leg_quoted_unread() {
 	local rc=0 naive=''
 	lm_rc "$lm_dir/quoted" 1 || rc=$?
@@ -25170,7 +25510,22 @@ ask_prompt_carries_no_name() { # ask_prompt_carries_no_name [root] -- no literal
 	# rendering against. The rc is read before anything negates it (H-0259), and the reader's own
 	# words are kept, so a refusal names the arm that fired instead of only saying it refused.
 	box=$(mktemp -d "$work/ask-name-XXXX") || return 1
-	name=$(cd -- "$root" 2>/dev/null &&
+	# H-0407: a bare reader standing in the harness's OWN checkout now refuses by design -- the
+	# harness is no longer implicitly its own target. The names this leg compares against are the
+	# shipped defaults, and defaults render only where a target exists, so the bare call asks a
+	# planted checkout: the shipped files one level DOWN inside a fresh forge tree, which is what
+	# a watched clone is. The forge repo above the plant is no decoration -- measured above,
+	# `git -C "$FACTORY_DIR/.." worktree list` kills a bare reader on a plant that is no forge.
+	local reader_root=$root
+	if [ -z "${1:-}" ] && git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+		reader_root=$box/harness
+		if ! { esc_ctrl_copy "$reader_root" >/dev/null && git init -q "$box" >/dev/null; }; then
+			printf '            the planted watched checkout could not be written, so the\n' >&2
+			printf '            shipped default has nowhere to be read from\n' >&2
+			return 1
+		fi
+	fi
+	name=$(cd -- "$reader_root" 2>/dev/null &&
 		env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS -u FACTORY_TREES \
 			-u FACTORY_LOG -u FACTORY_ESCALATION_LABEL \
 			bash ./factory/escalation-label.sh 2>"$box/err")

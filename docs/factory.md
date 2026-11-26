@@ -1193,13 +1193,17 @@ The count is every commit reachable from `origin/main` that the tree lacks, whic
 is parked three merge commits back on a history of merges and says 33, because 33 merged commits are
 what it is missing. `git log --oneline HEAD..origin/main` is the list it counts.
 
-Two trees can be "the code under test" and they are different directories, which is why the branch is
-never asked of a global: `$FACTORY_HARNESS` is where the running script was read from -- what `--status`
-and the pass report, because it is what is actually executing -- and `$FACTORY_ROOT` is what `@REPO@`
-becomes, so `--install` judges that one, because it is the tree this install would arm. They are equal
-only while the harness lives in the primary checkout, which is the arrangement `H-0009` rejects. What the
-loop runs *today* is neither of those globals: it is the `ExecStart=` of the unit already installed, and
-since #260 that is read (`factory_installed_tree`, `factory/common.sh`) instead of inferred.
+Two trees can be "the code under test" and they are different directories, which is why the branch
+is never asked of a global: `$FACTORY_HARNESS` is where the running script was read from -- what
+`--status` and the pass report read, because it is what is actually executing -- and `$FACTORY_ROOT`
+is what `@REPO@` becomes, the TARGET the work is delivered against. Since H-0407 `--install` judges
+the HARNESS instead, because `@HARNESS@` is what `ExecStart=` runs: a stale harness refuses however
+current its target, and a stale target does not. They are equal only where somebody said so -- the
+default resolves the target outside the harness and a silent self-target exits 2 -- and the state
+box (`FACTORY_LOG`, `FACTORY_LEDGER`, `FACTORY_RUN`, `FACTORY_HALT`) sits beside the harness, while
+`FACTORY_TREES` follows the target. What the loop runs *today* is neither of those globals: it is
+the `ExecStart=` of the unit already installed, and since #260 that is read
+(`factory_installed_tree`, `factory/common.sh`) instead of inferred.
 
 This is what a reinstall of that tree now prints, verbatim:
 
@@ -1396,10 +1400,12 @@ filed this requirement pastes a `PASS` block into its own body, and a substring 
 a quote.
 
 `how=` says whether the old directory was recorded or inferred: `recorded` from a previous `LOG-AT`,
-`derived` from an older `PASS … root=<tree>` plus the `/factory/log` suffix, which is the path the
-generated unit implies because it sets no `FACTORY_LOG`. Recorded wins regardless of line order, and that
-is not a preference: a pass writes `LOG-AT` and then its own `PASS` a few hundred milliseconds later, so a
-newest-line-wins rule answers `derived` on every pass and the fact never reaches the log.
+or from the `log=` field every `PASS` line has carried since H-0407; `derived` from an older `PASS …
+root=<tree>` plus the `/factory/log` suffix, the path the generated unit implied while `root=` was
+still the code tree, since it sets no `FACTORY_LOG`. Recorded wins regardless of line order, and
+that is not a preference: a pass writes `LOG-AT` and then its own `PASS` a few hundred milliseconds
+later, so a newest-line-wins rule answers `derived` on every pass and the fact never reaches the
+log.
 
 `tail=` is about the copy, the only write here outside stdout. It is refused unless the old directory is a
 real directory, writable, and not a link, and the file in it is absent or a real regular file -- with each
@@ -1430,13 +1436,17 @@ The clauses, in the order they are judged: `old-directory-is-a-symlink`, `no-suc
 path and this pass will not write through or into it. `tail=failed` is the sixth state and carries no
 `refuse=`, because there the append *was* attempted and the file itself refused it.
 
-One `refuse=` arrives with advice attached, because on a live machine it is the common case rather than an
-edge. `how=derived` means no old pass ever named its directory, so the path was built from that pass's
-`root=` plus `/factory/log` -- the path the generated unit implies, since it sets no `FACTORY_LOG`. Whether
-that path holds a journal depends on the tree, and both answers were measured here on 12 Nov: a record whose
-`root=` is the main checkout resolves to a real journal and copies into it (`tail=ok`), while a record whose
-`root=` is a worktree with no `factory/log` -- a fresh one, or one of the trees deleted inside the hour on
-10 Nov -- answers `tail=skipped refuse=no-such-directory`:
+One `refuse=` arrives with advice attached, because on a live machine it is the common case rather
+than an edge. `how=derived` means no old pass ever named its directory, so the path was built from
+that pass's `root=` plus `/factory/log` -- the path the generated unit implied while `root=` was
+still the code tree, since it sets no `FACTORY_LOG`. Since H-0407 a `PASS` line names its own
+directory as `log=`, so `how=derived` can only be reached from a pass older than the split, when
+`root=` was still the code tree; after it `root=` is the TARGET, and `<target>/factory/log` is a
+directory the old pass never wrote. Whether that path holds a journal depends on the tree, and both
+answers were measured here on 12 Nov: a record whose `root=` is the main checkout resolves to a real
+journal and copies into it (`tail=ok`), while a record whose `root=` is a worktree with no
+`factory/log` -- a fresh one, or one of the trees deleted inside the hour on 10 Nov -- answers
+`tail=skipped refuse=no-such-directory`:
 
 ```
 2026-11-12T20:04:11Z LOG-MOVED old=/home/rodney/prj/wt/issue-260/factory/log new=/tmp/opencode/linectl2/newlog prev-pass=2026-11-10T10:17:19Z how=derived tail=skipped refuse=no-such-directory -- the journal lives inside the tree the loop runs from, so this pass writes where the pass before it did not; whichever of the two files this line is in, the OTHER one is the tail an operator may still be reading, and its last line is the last thing this loop ever said there. The old path is derived from that pass's own root= field, because it ran before a pass could name its journal directory; where it names the tree rather than the directory, FACTORY_LOG was overridden by hand. That is also why this answer often arrives with tail=skipped refuse=no-such-directory: a path built from root= points at no journal at all unless the old pass overrode FACTORY_LOG, and it says nothing about where that pass really wrote. The journal that went quiet is /home/rodney/prj/wt/issue-260/factory/log/supervisor.log. The tail= field is about the copy of this line written into it: ok wrote it, failed the append itself was refused, skipped nothing was opened -- and skipped carries refuse= naming the clause that refused, because five clauses answer skipped and they are not one fact: old-directory-is-a-symlink, old-directory-not-writable, old-journal-is-a-symlink and old-journal-not-a-regular-file each name something sitting at the old path this pass will not write through or into, and only no-such-directory says there is nothing there to tail. The clauses in the order they are judged: old-directory-is-a-symlink, no-such-directory, old-directory-not-writable, old-journal-is-a-symlink, old-journal-not-a-regular-file (#260)
@@ -1444,8 +1454,8 @@ that path holds a journal depends on the tree, and both answers were measured he
 
 Neither answer says where the old pass actually wrote, and that is what the sentence on the line now says
 out loud: the derived path is where the unit would have put it, not where the pass said it put it. The only
-record of the latter is a `LOG-AT` written by a pass of this build or newer, which the next pass reads and
-reports as `how=recorded`.
+record of the latter is a `LOG-AT`, or the `log=` on a `PASS` line since H-0407, written by a pass of this
+build or newer, which the next pass reads and reports as `how=recorded`.
 
 A refusal to answer is said rather than left as silence, so that the absence of `LOG-MOVED` is never
 evidence nothing moved:
