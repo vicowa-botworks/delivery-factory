@@ -14837,6 +14837,40 @@ split_self_target_control_red() {
 	return 0
 }
 claim_leg 'control: an inverted self-target guard goes red' split_self_target_control_red
+# ...and the arm the plant above cannot express: the reader run from a directory that is no git
+# checkout at all. That is where `set -euo pipefail` bites -- a command substitution whose
+# pipeline fails ends the script at the ASSIGNMENT, before the guard's own `if`, so the refusal
+# this branch exists to add never runs and the operator is handed a bare 128 that prints nothing.
+# Measured on fa0c3587: `main` answered that same call with the label. rc alone cannot tell 2
+# from 128, so the grep on the wording is the load-bearing half -- and the fixture's premise is
+# asserted first, because a probe dir sitting under a checkout would exercise the other arm and
+# read green while this one went untested.
+split_refuses_from_a_non_git_dir() {
+	local box h rc nogit
+	box=$(split_tree_plant ref) || { pos_say 'the two-tree plant could not be written'; return 1; }
+	h=$box/harness
+	nogit=$(mktemp -d "$work/split-nogit-XXXX") || return 1
+	if git -C "$nogit" rev-parse --git-dir >/dev/null 2>&1; then
+		pos_say "the probe dir $nogit sits INSIDE a git checkout, so this leg would exercise"
+		pos_say 'the standing-in-a-target arm and report green with the non-git arm untested.'
+		return 1
+	fi
+	(cd -- "$nogit" && env -u FACTORY_DIR -u FACTORY_ROOT -u FACTORY_HARNESS -u FACTORY_TREES \
+		-u FACTORY_LOG -u FACTORY_LEDGER -u FACTORY_RUN -u FACTORY_HALT \
+		bash "$h/factory/escalation-label.sh") >"$box/a3" 2>&1
+	rc=$?
+	[ "$rc" -eq 2 ] || {
+		pos_say 'a bare reader with no git anywhere above it did not refuse with exit 2 (it gave'
+		pos_say "$rc -- 128 means set -e killed the script at the assignment, so the refusal"
+		pos_say 'never ran and nothing at all was printed):'; pos_say "$(cat "$box/a3")"; return 1; }
+	grep -qF 'is the harness itself' "$box/a3" || {
+		pos_say 'the non-git arm ended on a status instead of the refusal. The words are the half'
+		pos_say 'that proves the guard ran, because rc cannot separate 2 from 128:'
+		pos_say "$(cat "$box/a3")"; return 1; }
+	return 0
+}
+claim_leg 'a bare reader outside any checkout still refuses' split_refuses_from_a_non_git_dir
+
 
 install_nobase_refuses() {
 	pos_install "$pos_nobase" "$pos_nobase" --install
@@ -15234,6 +15268,20 @@ unit_records_its_own_name() {
 		pos_say 'the recorded name appears somewhere other than its own line, so removing that line'
 		pos_say 'would not remove the value from the unit:'; pos_say "$b"; return 1
 	fi
+	# The `@REPO@`/`@HARNESS@` mapping, pinned. Every leg above renders with root == harness, so
+	# the two substitutions are indistinguishable in them: swap them in install-timer.sh's render()
+	# and the whole suite stays green while every installed timer execs the target and watches the
+	# harness. Two DISTINCT trees plus one grep per side is the only thing that separates them, and
+	# each message names which side of the pair it is holding.
+	local t2
+	t2=$(pos_clone splittarget) || return 1
+	pos_install "$t2" "$pos_current" --install --dry-run >/dev/null 2>&1
+	printf '%s' "$pos_out" | grep -qxF "ExecStart=$pos_current/factory/factory.sh" || {
+		pos_say 'the rendered unit does not exec the HARNESS tree it was installed from:'
+		pos_say "$pos_out"; return 1; }
+	printf '%s' "$pos_out" | grep -qxF "Environment=FACTORY_ROOT=$t2" || {
+		pos_say 'the rendered unit does not point Environment=FACTORY_ROOT at the TARGET tree:'
+		pos_say "$pos_out"; return 1; }
 	return 0
 }
 claim_leg 'the unit records the name it was installed under' unit_records_its_own_name

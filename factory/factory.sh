@@ -131,7 +131,10 @@ EOF
 			printf '\n'
 			;;
 		esac
-		printf 'repo:    %s\n' "$(git -C "$FACTORY_ROOT" remote get-url origin 2>/dev/null)"
+		# `target:`, not `repo:`: since H-0407 the journal's `repo=` names the HARNESS checkout, and
+		# this line reads the origin of the watched tree. One word for two trees is exactly the
+		# confusion `--status` is the command you reach for during.
+		printf 'target:  %s\n' "$(git -C "$FACTORY_ROOT" remote get-url origin 2>/dev/null)"
 		# Which checkout the timer is armed to exec (#260). `code:` above answers for the tree you are
 		# standing in, and that is a different question: the incident this line is the answer to was a
 		# unit installed from one checkout while the guard reported on another, and the person holding

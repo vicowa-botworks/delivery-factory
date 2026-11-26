@@ -32,30 +32,6 @@ _factory_main() {
 # answers are the harness, there is no target and the run refuses. An EXPLICIT FACTORY_ROOT is
 # never refused, so a person who wants the harness watched as a repo like any other says so --
 # silence never says it.
-FACTORY_HARNESS=${FACTORY_HARNESS:-$(cd -- "$FACTORY_DIR/.." && pwd)}
-_factory_root_explicit=${FACTORY_ROOT:-}
-FACTORY_ROOT=${FACTORY_ROOT:-$(_factory_main)}
-[ -n "$FACTORY_ROOT" ] || FACTORY_ROOT=$(cd -- "$FACTORY_DIR/.." && pwd)
-# The split applies to a REAL harness checkout only. A bare fixture tree -- a directory the
-# selftest plants that is not a git repository -- has FACTORY_DIR/.. == FACTORY_HARNESS by
-# construction, and there the old default (the fixture itself) is the honest answer: refusing
-# or reaching for $PWD would rewrite the fixtures' premise. git-ness is the discriminator.
-if [ -z "$_factory_root_explicit" ] && [ "$FACTORY_ROOT" = "$FACTORY_HARNESS" ] &&
-   git -C "$FACTORY_HARNESS" rev-parse --git-dir >/dev/null 2>&1; then
-	_standing=$(git -C "$PWD" worktree list --porcelain 2>/dev/null |
-		awk '/^worktree /{print substr($0,10); exit}')
-	if [ -n "$_standing" ] && [ "$_standing" != "$FACTORY_HARNESS" ]; then
-		FACTORY_ROOT=$_standing
-	else
-		printf 'factory: no target: %s is the harness itself.\n' "$FACTORY_HARNESS" >&2
-		printf '  Run from inside the watched checkout, or name it explicitly:\n' >&2
-		printf '    FACTORY_ROOT=<path> %s\n' "${0:-factory.sh}" >&2
-		printf '  (An explicit FACTORY_ROOT naming even this tree is accepted -- watched is a\n' >&2
-		printf '  decision, not a default. Silence is not.)\n' >&2
-		exit 2
-	fi
-fi
-
 # The tree that holds the harness itself -- `factory/`, `.opencode/opencode.jsonc` (where the
 # `factory` agent and its `deny` rules are defined) and `.opencode/skills/factory/SKILL.md`. It is
 # NOT the same directory as FACTORY_ROOT whenever the harness runs from a linked worktree, which is
@@ -75,6 +51,33 @@ fi
 # a directory outside the repository, with none of this project's config -- not `question: deny`, not
 # the skill grants -- in force.
 FACTORY_HARNESS=${FACTORY_HARNESS:-$(cd -- "$FACTORY_DIR/.." && pwd)}
+_factory_root_explicit=${FACTORY_ROOT:-}
+FACTORY_ROOT=${FACTORY_ROOT:-$(_factory_main)}
+[ -n "$FACTORY_ROOT" ] || FACTORY_ROOT=$(cd -- "$FACTORY_DIR/.." && pwd)
+# The split applies to a REAL harness checkout only. A bare fixture tree -- a directory the
+# selftest plants that is not a git repository -- has FACTORY_DIR/.. == FACTORY_HARNESS by
+# construction, and there the old default (the fixture itself) is the honest answer: refusing
+# or reaching for $PWD would rewrite the fixtures' premise. git-ness is the discriminator.
+# The `|| true` belongs to the ASSIGNMENT, not to the pipeline inside the substitution:
+# every entry point sets `set -euo pipefail`, so a failing pipeline ends the script at the
+# `=` -- before the refusal below it -- and the operator is handed a bare 128 that prints
+# nothing, from a command that answered on the previous release.
+if [ -z "$_factory_root_explicit" ] && [ "$FACTORY_ROOT" = "$FACTORY_HARNESS" ] &&
+   git -C "$FACTORY_HARNESS" rev-parse --git-dir >/dev/null 2>&1; then
+	_standing=$(git -C "$PWD" worktree list --porcelain 2>/dev/null |
+		awk '/^worktree /{print substr($0,10); exit}') || true
+	if [ -n "$_standing" ] && [ "$_standing" != "$FACTORY_HARNESS" ]; then
+		FACTORY_ROOT=$_standing
+	else
+		printf 'factory: no target: %s is the harness itself.\n' "$FACTORY_HARNESS" >&2
+		printf '  Run from inside the watched checkout, or name it explicitly:\n' >&2
+		printf '    FACTORY_ROOT=<path> %s\n' "${0:-factory.sh}" >&2
+		printf '  (An explicit FACTORY_ROOT naming even this tree is accepted -- watched is a\n' >&2
+		printf '  decision, not a default. Silence is not.)\n' >&2
+		exit 2
+	fi
+fi
+
 
 # The repository, read from gh rather than hardcoded: a hardcoded owner/name is the bug
 # watch-pr.sh refuses to carry -- guessing a repo means reporting somebody else's pull requests.
