@@ -682,6 +682,144 @@ factory_poke_ask_note() { # factory_poke_ask_note <pr>
 	return 0
 }
 
+# Auto-merge: hand a finished wait to GitHub (H-0411).
+#
+# `awaiting_merge` with checks pending is a pull request that has passed every test of judgement:
+# the review is APPROVED, the branch is MERGEABLE, nothing conflicts. What it lacks is a clock
+# reading -- `pending` is GitHub still working -- and the queue's only verb for that used to be
+# re-reading the same four facts every activation forever. `allow_auto_merge` on the repository
+# means GitHub can do that wait itself: `gh pr merge --auto` enqueues a merge the server performs
+# the moment the last condition clears, and the queue's job becomes checking the queueing landed
+# and collecting the result.
+#
+# The offer is narrow on purpose. Only the pending-checks shape of `awaiting_merge` is offered
+# (`checks=pending` in the row's own detail, written by triage.sh, not re-guessed here); a
+# repository that has not enabled auto-merge is refused quietly-into-the-plain-wait, never
+# failed-open into a direct merge; and an enqueue that does not read back is journalled as the
+# refusal it is, with the wait continuing underneath it. `FACTORY_AUTO_ENQUEUE=0` turns the arm
+# off per deployment and says so on the journal, the `FACTORY_HARNESS_POKE=0` pattern (H-0409):
+# a capability that quietly stops running is the silence this harness exists to end.
+factory_auto_merge_allowed() { # -> 0 the repository enables auto-merge | 1 it does not, or cannot be read
+	local v
+	v=$(gh api "repos/$FACTORY_OWNER/$FACTORY_NAME" --jq '.allow_auto_merge | tostring' 2>/dev/null) || return 1
+	[ "$v" = "true" ]
+}
+
+# The row-level decision. Returns 0 when the row is the queue's no more -- enqueued, enqueued
+# already, or dry-run-rehearsed -- and 1 when the plain wait stands, which is what the caller does
+# with it. The branch is carried in the ledger because a completion can land on any later pass,
+# and the closeout needs to know which tree and ref to retire.
+factory_auto_enqueue_offer() { # <pr> <branch> <row-detail> -> 0 the queue owns this row now | 1 keep waiting
+	local pr=$1 branch=$2 detail=$3
+	if [ "$FACTORY_AUTO_ENQUEUE" != "1" ]; then
+		printf '%s' "$detail" | grep -q 'checks=pending' || return 1
+		log_event "AUTO-ENQUEUE-OFF pr:$pr FACTORY_AUTO_ENQUEUE=$FACTORY_AUTO_ENQUEUE, the wait stands"
+		return 1
+	fi
+	printf '%s' "$detail" | grep -q 'checks=pending' || return 1
+	if [ -n "$(factory_ledger_get "pr:$pr" auto-enqueue)" ]; then
+		# Already queued: the sweep carries the line from here, and the wait's escalation clock
+		# must not double-count a wait GitHub is already finishing.
+		return 0
+	fi
+	if ! factory_auto_merge_allowed; then
+		return 1
+	fi
+	factory_auto_enqueue "$pr" "$branch"
+}
+
+factory_auto_enqueue() { # <pr> <branch> -> 0 queued (read back) | 1 refused or unconfirmed
+	local pr=$1 branch=$2
+	local auto merge_rc=0 gh_err gh_reason
+	if [ "$DRY_RUN" = "1" ]; then
+		printf 'DRY-RUN  gh pr merge %s --auto --merge --delete-branch\n' "$pr"
+		log_event "WOULD-AUTO-ENQUEUE pr:$pr branch:$branch GitHub would merge when the checks clear"
+		return 0
+	fi
+	# `--delete-branch` beside `--auto` is not the #221 hazard: with an enqueue nothing merges
+	# now, so gh only records the intent and GitHub deletes the head ref at completion. The
+	# LOCAL branch outlives the enqueue and is retired by the closeout, like any external merge.
+	# The scratch lives under $FACTORY_RUN, which the pass normally creates; a missing one must
+	# not EAT the merge call. A redirect into an absent directory fails the command before gh
+	# runs, and mkdir inside the same command line cannot help -- bash opens the redirect
+	# before executing anything. So: create the dir on its own line, unlink a stale error file
+	# (bash `>` would truncate it, but `|| rc=` must not read a dead redirect as silence), and
+	# read the reason guarded. Measured in a clean fixture: the first leg run died exactly here.
+	[ -d "$FACTORY_RUN" ] || mkdir -p -- "$FACTORY_RUN"
+	gh_err="$FACTORY_RUN/auto-enqueue-error.$$"
+	rm -f -- "$gh_err"
+	run_action gh pr merge "$pr" --auto --merge --delete-branch 2>"$gh_err" || merge_rc=$?
+	if [ ! -f "$gh_err" ]; then
+		# The redirect itself failed, or the pass cannot write scratch: say so instead of
+		# reporting an empty gh_reason as the repository's answer.
+		log_event "AUTO-ENQUEUE-ERROR pr:$pr could not open $gh_err for the refusal reason"
+		return 1
+	fi
+	gh_reason=$(tr -d '\r' <"$gh_err" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-180)
+	rm -f -- "$gh_err"
+	# Judge the queueing by what the API says the pull request became, not by gh's exit status
+	# (#1180's rule at one remove from the merge itself): autoMergeRequest is the server's own
+	# record that a queueing exists.
+	auto=$(gh pr view "$pr" --json autoMergeRequest \
+		--jq 'if .autoMergeRequest == null then "null" else (.autoMergeRequest.mergeMethod // "enabled") end' 2>/dev/null)
+	case "$auto" in
+	'' | null | unknown)
+		log_event "AUTO-ENQUEUE-REFUSED pr:$pr gh_exit=$merge_rc read-back said ${auto:-nothing} :: ${gh_reason:-gh printed nothing on stderr}"
+		return 1
+		;;
+	esac
+	factory_ledger_now "pr:$pr" auto-enqueue
+	factory_ledger_set "pr:$pr" auto-enqueue-branch "$branch"
+	log_event "AUTO-ENQUEUED pr:$pr method=$auto branch:$branch GitHub will merge when the last check clears"
+	return 0
+}
+
+# Collect what the enqueued merges became. The server does not write our journal: without this
+# sweep a completed auto-merge leaves no MERGED line, no `merged-at`, no closure verification
+# (#353), no worktree and no branch retirement -- the ledger silence of a thing that really
+# happened, which is #1180's phantom wearing GitHub's clothes. The closeout is the same
+# `factory_merge_finalize` the direct arm runs, so a merge by GitHub and a merge by the queue
+# leave identical records.
+factory_auto_enqueue_sweep() { # -> 0 every closeout landed | 1 a read or cleanup failed
+	local f p branch merged state enq rc=0
+	for f in "$FACTORY_LEDGER"/pr:*.auto-enqueue; do
+		[ -e "$f" ] || continue
+		p=${f##*/}
+		p=${p#pr:}
+		p=${p%%.*}
+		branch=$(factory_ledger_get "pr:$p" auto-enqueue-branch)
+		merged=$(api_get "pulls/$p" '.merged | tostring' 'unknown')
+		state=$(api_get "pulls/$p" '.state' 'UNKNOWN')
+		if [ "$DRY_RUN" = "1" ]; then
+			log_event "WOULD-AUTO-CLOSEOUT pr:$p state=$state merged=$merged the ledger was not touched"
+			continue
+		fi
+		if [ "$merged" = "true" ]; then
+			log_event "AUTO-MERGED pr:$p GitHub completed the merge the queue started"
+			factory_merge_finalize "$p" "$branch" || rc=1
+		elif [ "$merged" = "unknown" ]; then
+			# No verdict, no action: the stamp survives and next pass asks again. Dropping the
+			# stamp on an unreadable read is how a completed merge becomes an orphan tree.
+			log_event "AUTO-ENQUEUE-SKIPPED pr:$p the pull request could not be read back"
+			rc=1
+		elif [ "$state" = "CLOSED" ]; then
+			# Closed unmerged: somebody rejected it or merged it sideways and GitHub says no
+			# merge record exists. The queue's answer is to forget the queueing, not to
+			# resurrect it. REST answers open/closed -- uppercase, measured through the same
+			# api_get a leg now pins.
+			log_event "AUTO-ENQUEUE-CLOSED pr:$p closed without a merge, the queueing is dropped"
+			factory_ledger_clear "pr:$p" auto-enqueue
+			factory_ledger_clear "pr:$p" auto-enqueue-branch
+		else
+			enq=$(factory_ledger_get "pr:$p" auto-enqueue)
+			log_event "AUTO-ENQUEUE-PENDING pr:$p enqueued $enq still waiting on its checks"
+			factory_maybe_notice "pr:$p" awaiting_merge "$enq" \
+				"queued for auto-merge at $enq and the checks have still not cleared"
+		fi
+	done
+	return "$rc"
+}
+
 # Merge, with every fact read back from the API in the same breath as the merge.
 #
 # The read-back is not a courtesy. #1180 records writing "All three are APPROVED and CLEAN.
@@ -747,9 +885,21 @@ factory_merge() {
 	else
 		log_event "MERGED pr:$pr merged_field=$merged"
 	fi
+	factory_merge_finalize "$pr" "$branch"
+}
+
+# Everything that follows a merge that happened, whoever made it happen (H-0411): the ledger's
+# record, the closure verification (#353), the tree, the branch. Split out of `factory_merge` so
+# the auto-merge closeout runs the identical closeout -- a merge by GitHub that left a worktree
+# and a `stuck-since` behind would be the second way this harness grows orphan trees while
+# telling nobody.
+factory_merge_finalize() { # <pr> <branch> -> 0 closed out | 1 something was left behind
+	local pr=$1 branch=$2
 	factory_ledger_clear "pr:$pr" stuck-since
 	factory_ledger_clear "pr:$pr" last-notice
 	factory_ledger_now "pr:$pr" merged-at
+	factory_ledger_clear "pr:$pr" auto-enqueue
+	factory_ledger_clear "pr:$pr" auto-enqueue-branch
 	# And then the question the merge arm never asked: did the issues this body named with a verb
 	# actually close? It goes here, after the ledger is stamped, because a failure to notice must not
 	# cost a merge its own record (#353).
@@ -2339,7 +2489,17 @@ factory_body() {
 		# a row the queue cannot yet locate -- and worse, the wait's ONE human-facing notice would
 		# age into a sentence blaming a maintainer for a state GitHub had not produced (#430's
 		# live comment). Quiet here is the whole fix: no session, no comment, one re-read later.
-		awaiting_merge | awaiting_review | checks_pending | draft | mergeability_pending)
+		awaiting_merge)
+			# A fully approved pull request whose checks are still running is work finished and
+			# waiting, and when the repository offers auto-merge the waiting is GitHub's job, not
+			# the queue's (H-0411). The offer journals its own verdict either way; every other
+			# shape of `awaiting_merge` -- approved but behind, approved with an unstable state --
+			# keeps the plain wait, because auto-merge is not owed a merge on those states.
+			if ! factory_auto_enqueue_offer "$key" "$branch" "$detail"; then
+				factory_wait "$unit" "$key" "$class" "$detail"
+			fi
+			;;
+		awaiting_review | checks_pending | draft | mergeability_pending)
 			factory_wait "$unit" "$key" "$class" "$detail"
 			;;
 		# A merged pull request already claims this issue, so the work is on the trunk and the ticket
@@ -2553,6 +2713,12 @@ factory_body() {
 	# rc=4 for the same reason the `needs_reviewer` arm raises it: a reported problem, journaled,
 	# retried under the throttle, never a silent zero.
 	factory_harness_review_sweep || rc=4
+
+	# The other collection the queue owes: merges the server finished on its own (H-0411). It
+	# runs beside the poke sweep for the same reason -- after the rows, before the disarm -- so
+	# its journal lines belong to the pass and a failed closeout reddens the END instead of
+	# vanishing.
+	factory_auto_enqueue_sweep || rc=4
 
 	# The pass reached its own verdict; stand the death trap down BEFORE the planned END, because
 	# the return and the script's final `exit $?` still walk through the EXIT trap, and a guard
