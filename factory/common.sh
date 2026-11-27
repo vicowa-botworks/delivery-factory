@@ -120,6 +120,11 @@ FACTORY_NAME=${FACTORY_NAME:-}
 # empty are different answers, which is the same distinction #873 makes for a config key.
 FACTORY_REVIEWER=${FACTORY_REVIEWER-hermesvicowa}
 FACTORY_REVIEWER_TEAM=${FACTORY_REVIEWER_TEAM-workers}
+# The #3 half-2 sweep: does each pass also ask for reviews on the HARNESS repository's open pull
+# requests? Default on; `FACTORY_HARNESS_POKE=0` is a per-deployment refusal and journals itself as
+# `HARNESS-POKE-OFF` every pass, because a queue that quietly stops being swept is the same silence
+# the sweep exists to end.
+FACTORY_HARNESS_POKE=${FACTORY_HARNESS_POKE:-1}
 
 # The poke's target as one string: `team:<slug>`, `user:<login>`, or empty for neither. Written, read
 # back, logged and --dry-run'd from here, so the four cannot disagree about who was asked. They
@@ -131,6 +136,30 @@ factory_review_target() {
 	elif [ -n "$FACTORY_REVIEWER" ]; then
 		printf 'user:%s' "$FACTORY_REVIEWER"
 	fi
+}
+
+# The harness repository's identity, for the #3 half-2 sweep. The same expression `factory_resolve`
+# uses for the target, and for the reason recorded there the `.git` suffix must go before the greedy
+# match: a name that comes back `name.git` makes every call under it answer 404, which is what a
+# wrong repository looks like when the caller swallows the error. Prints the slug, or nothing when
+# the tree has no readable origin. Sameness with the target is the CALLER's call, because "there is
+# no second queue" and "I cannot tell" are different sentences for the journal.
+factory_harness_repo() { # -> owner/name on stdout, or nothing
+	local repo=""
+	# NOT a copy of the target resolver's expression. That one is
+	# `s#^([^/]+[:/])?([^/]+/[^/]+)$#` after the suffix strip, and it matches the SSH form only:
+	# in `https://host/owner/name` the scheme can consume at most one slash before `[^/]+`, so
+	# the match answers NOTHING for an https remote -- measured on this leg's first exercise,
+	# where a fixture exactly like the live harness (whose origin IS https, re-read 27 Nov) came
+	# back empty and every run journaled HARNESS-POKE-UNKNOWN. The target resolver survives
+	# https only because it falls back to `gh repo view`, which resolves from the CURRENT
+	# DIRECTORY -- inside a pass that is the TARGET, never the harness, so this helper cannot
+	# borrow that fallback and the URL expression has to carry both forms itself: strip the
+	# suffix, strip a `scheme://` prefix, keep the last two path components.
+	repo=$(git -C "$FACTORY_HARNESS" remote get-url origin 2>/dev/null |
+		sed -E -e 's#\.git$##' -e 's#^[^/]+://##' -e 's#.*[:/]([^/]+/[^/]+)$#\1#')
+	[ -n "$repo" ] && factory_valid_repo "$repo" && printf '%s\n' "$repo"
+	return 0
 }
 
 # Who holds a review request, read out of `GET pulls/N/requested_reviewers`, defined once because two

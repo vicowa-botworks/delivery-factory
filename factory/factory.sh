@@ -497,6 +497,116 @@ factory_request_review() {
 	return 1
 }
 
+# The same ask for the HARNESS repository, which is where the harness's own code ships.
+#
+# Why this exists (#3 half 2): `AGENTS.md` makes the reviewer request the supervisor's component --
+# "the component that does it is the supervisor's poke, not whoever opened the pull request" -- and
+# `factory_request_review` can only ever address `$FACTORY_OWNER/$FACTORY_NAME`, which since H-0407
+# is the TARGET's repository. A pull request opened against the harness was therefore invisible to
+# the one component the rule says owns the ask: #1 merged only because a person read it by hand.
+# The rule reading true on one repository and false on the other is what the issue named the worse
+# combination: the prose tells every opener that someone else asks.
+#
+# Scope, chosen in H-0409 over full queue integration: this sweeps ASKS only. It never ticks, never
+# dispatches, never merges against the harness. An unattended loop shipping the code that ships it
+# is a governance decision, not a queue convenience, and it stays open for whoever owns that call.
+#
+# Silence is the failure mode this function exists to end, so every path journals: a sweep of an
+# empty queue says `open=0`, a disabled sweep says which knob turned it off, and an unreadable
+# origin says which tree. The one exception is `hrepo == FACTORY_REPO` -- no split, the harness
+# queue IS the queue the pass just worked -- where a line every pass would be the journal noise
+# that hides the lines that matter.
+#
+# The per-pull throttle lives in its own ledger namespace (`harness-pr:`): `pr:5` is already a unit
+# of the target queue, two repositories may share a number, and a stamp from one queue must not
+# throttle the other's ask.
+factory_harness_review_sweep() { # -> 0 every ask landed (or there was nothing to ask) | 1 an ask failed
+	local hrepo target who arg label n held last age opens=""
+	local asked=0 held_n=0 throttled=0 failed=0
+	if [ "$FACTORY_HARNESS_POKE" != "1" ]; then
+		log_event "HARNESS-POKE-OFF the harness queue was not swept: FACTORY_HARNESS_POKE=$FACTORY_HARNESS_POKE"
+		return 0
+	fi
+	target=$(factory_review_target)
+	if [ -z "$target" ]; then
+		log_event "HARNESS-POKE-NONE nobody is configured to be asked -- set FACTORY_REVIEWER_TEAM=<team slug> or FACTORY_REVIEWER=<login>"
+		return 1
+	fi
+	who=${target#*:}
+	case "$target" in
+	team:*) arg="team_reviewers[]=$who" label="team $who" ;;
+	user:*) arg="reviewers[]=$who" label="$who" ;;
+	esac
+	# No split, first arm: the pass supervises the SAME CHECKOUT it execs. This is the pre-H-0407
+	# shape, and it is what every fixture pass in `selftest.sh` runs -- their harness origin is a
+	# temp path whose slug matches nothing, so without this arm the sweep reads their strict `gh`
+	# shim, takes the refusal it is designed to give (exit 9, measured: 18 proc legs reddened on
+	# the first run of this function), and raises `rc=4` over a queue that is not a second queue.
+	# Directory identity is the split's own signal; the slug comparison below is its afterimage on
+	# the remote, which still earns its place for two clones of one repository.
+	if [ -n "$FACTORY_HARNESS" ] && [ -n "$FACTORY_ROOT" ] &&
+		[ "$(readlink -f -- "$FACTORY_HARNESS" 2>/dev/null)" = "$(readlink -f -- "$FACTORY_ROOT" 2>/dev/null)" ]; then
+		return 0
+	fi
+	hrepo=$(factory_harness_repo)
+	if [ -z "$hrepo" ]; then
+		log_event "HARNESS-POKE-UNKNOWN the harness tree $FACTORY_HARNESS has no readable origin, so its queue cannot be swept"
+		return 1
+	fi
+	if [ "$hrepo" = "$FACTORY_REPO" ]; then
+		return 0
+	fi
+	opens=$(gh api "repos/$hrepo/pulls?state=open&per_page=100" --jq '[.[] | .number] | .[]' 2>/dev/null) || {
+		log_event "HARNESS-POKE-FAILED repo:$hrepo the open-pull list could not be read; the harness queue went unswept"
+		return 1
+	}
+	for n in $opens; do
+		# A request held by ANYBODY answers the pull: the sweep asks only where both lists are
+		# empty, which is the state the #209/#212/#214/#215 incident left. The read is cheap and
+		# it is the same endpoint the poke's own read-back uses; treating a failed read as
+		# "unasked" is deliberate, because the POST below cannot over-ask -- GitHub answers 422
+		# for a held request and the read-back after a failed POST tells that state apart from a
+		# 404, exactly as `factory_request_review` does.
+		held=$(gh api "repos/$hrepo/pulls/$n/requested_reviewers" \
+			--jq '(((.users // []) | length) + ((.teams // []) | length))' 2>/dev/null) || held=''
+		if [ -n "$held" ] && [ "$held" != "0" ]; then
+			held_n=$((held_n + 1))
+			continue
+		fi
+		last=$(factory_ledger_get "harness-pr:$n" last-poke)
+		age=$(factory_age "harness-pr:$n" last-poke)
+		if [ -n "$last" ] && [ "$age" -lt "$FACTORY_REVIEW_POKES" ]; then
+			throttled=$((throttled + 1))
+			continue
+		fi
+		if [ "$DRY_RUN" = "1" ]; then
+			printf 'DRY-RUN  gh api -X POST repos/%s/pulls/%s/requested_reviewers -f %s\n' \
+				"$hrepo" "$n" "$arg"
+			log_event "WOULD-HARNESS-POKE pr:$n repo:$hrepo request review from $label"
+			asked=$((asked + 1))
+			continue
+		fi
+		if run_action gh api -X POST "repos/$hrepo/pulls/$n/requested_reviewers" -f "$arg" --silent; then
+			factory_ledger_now "harness-pr:$n" last-poke
+			log_event "HARNESS-POKED pr:$n repo:$hrepo asked $label"
+			asked=$((asked + 1))
+			continue
+		fi
+		if gh api "repos/$hrepo/pulls/$n/requested_reviewers" \
+			--jq "$JQ_REQUESTED_HOLDS" --raw-field who="$who" 2>/dev/null | grep -q true; then
+			factory_ledger_now "harness-pr:$n" last-poke
+			log_event "HARNESS-POKE-ALREADY pr:$n repo:$hrepo $label already holds a request"
+			held_n=$((held_n + 1))
+			continue
+		fi
+		factory_ledger_now "harness-pr:$n" last-poke
+		log_event "HARNESS-POKE-FAILED pr:$n repo:$hrepo $label could not be requested (a team must exist in this organisation and an individual must be a member of the repository; FACTORY_REVIEWER_TEAM=<team slug> and FACTORY_REVIEWER=<login> are the overrides, and a team wants its SLUG)"
+		failed=$((failed + 1))
+	done
+	log_event "HARNESS-POKE-SWEEP repo:$hrepo open=$(printf '%s\n' "$opens" | grep -c . || true) asked=$asked held=$held_n throttled=$throttled failed=$failed dry=$DRY_RUN"
+	[ "$failed" -eq 0 ]
+}
+
 # The newest change request on a pull request, asked of the API and reported.
 #
 # This is #242's third ask: "the newest change request on this pull request carries N bytes of
@@ -2437,6 +2547,12 @@ factory_body() {
 		left=$(printf '%s\n' "$workable" | grep -c . || true)
 		log_event "QUEUED $left unit(s) remain after $started tick(s); nothing was idle"
 	fi
+
+	# #3 half 2: the ask the rule promises, over the queue the rule's own code ships in. It runs
+	# BEFORE the disarm because its journal lines belong to the pass -- and an ask that failed is
+	# rc=4 for the same reason the `needs_reviewer` arm raises it: a reported problem, journaled,
+	# retried under the throttle, never a silent zero.
+	factory_harness_review_sweep || rc=4
 
 	# The pass reached its own verdict; stand the death trap down BEFORE the planned END, because
 	# the return and the script's final `exit $?` still walk through the EXIT trap, and a guard
