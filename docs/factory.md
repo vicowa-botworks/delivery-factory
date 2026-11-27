@@ -846,6 +846,18 @@ classifier label line that can name any other class (H-0140): stop, and nothing 
 
 ## Installing it
 
+Agents and automation start from `factory/install.sh`, the front door over `install-timer.sh`:
+`--target` and the reviewer knobs as flags, every machine check run **before** any write, a
+one-line `--json` verdict on stdout (prose goes to stderr), exit codes an automation can branch
+on (`0` done, `1` a named check failed and the envelope names it, `2` bad arguments, `3` this
+machine cannot host the harness), a `--dry-run` that answers the same questions writing nothing,
+and a `--verify` that reads an existing install back from systemd and the files rather than
+believing an installer's last line. It adds checks and a verdict and **no policy**:
+`install-timer.sh` remains the only writer of unit files, and every front-door run journals
+`INSTALL-true` / `INSTALL-false` with its refusals. A person following this page by hand may run
+either door -- the front door's checks are the same refusals `install-timer.sh` will make, read
+out before the sequence instead of at its end.
+
 Generate the units; do not copy them out of a README. `factory/install-timer.sh` asks the machine
 where `gh` and `opencode` actually live, derives the unit's `TimeoutStartSec` from `FACTORY_BUDGET`,
 and refuses to install anything that would fail quietly:
