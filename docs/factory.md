@@ -724,6 +724,32 @@ unserved, and that is the tick's own half of this: `SKILL.md` Step 5 makes a tic
 back *after* its push and write the dismissal into the pull-request body, so whoever is reading the
 pull request learns in one line what the queue will not say for another ten minutes.
 
+### The same ask over the harness repository
+
+Since H-0407 the unit can exec the harness while supervising another repository, and that split left
+the poke blind in exactly one direction: `factory_request_review` posts to
+`repos/$FACTORY_OWNER/$FACTORY_NAME`, which is the **target's** repository, while the harness's own
+pull requests — the only place the harness's code is delivered — sat in a queue nobody swept. #1
+merged only because a person read it by hand. The rule in `AGENTS.md` says the supervisor's poke owns
+the ask; on the harness repository that sentence was false, and a false promise in the prose is worse
+than an absent one (#3 half 2).
+
+Each pass therefore ends with `factory_harness_review_sweep`: it reads the harness repository's open
+pull requests, and for every one whose `/requested_reviewers` has neither `users` nor `teams` it asks
+the same `factory_review_target` the target queue asks, through the same REST endpoint, with the same
+throttle. Its state lives in its own ledger namespace (`harness-pr:<n>`) because two repositories may
+share a pull number. Every path journals — `HARNESS-POKED`, `HARNESS-POKE-ALREADY`,
+`HARNESS-POKE-FAILED`, and a `HARNESS-POKE-SWEEP` summary line naming the repository and the counts,
+`open=0` included, because a sweep that quietly stopped running is the silence this sweep exists to
+end. `FACTORY_HARNESS_POKE=0` turns it off and journals `HARNESS-POKE-OFF` every pass; with no
+split the sweep is silent — first when harness and root are the SAME directory (the pre-H-0407
+shape, which every fixture pass runs), then when both trees are clones of one repository —
+because the pass already worked that queue arm by arm.
+
+What the sweep deliberately is **not**: it never ticks, dispatches, or merges against the harness.
+Full queue integration would let the supervisor ship the code that ships it, unattended — that is a
+governance decision, recorded as the losing option in H-0409, and merging stays a human act here.
+
 ### The ask, and what happens when there is not one
 
 `address_review` used to be decided from three fields -- reviewer, state, timestamp -- and the body was
@@ -2001,6 +2027,7 @@ answering in a shell that has never sourced the harness.
 | `FACTORY_HALT_RELEASES` | `2` | how many times one unit's machine-written halt may remove itself when the tree it names is provably past its cause (#341); see the section under "Stopping it" |
 | `FACTORY_STREAK_HALT` | `0` | whether one unit's second preserved accident halts the whole repository as well as costing that unit its turn (#341 demand 3). `0` is the shipped scope: the unit loses its pass and every other unit is ticked. `1` is the pre-#341 escalation, kept reachable because it is the shape the halt re-probe is written against and because an operator may decide one unit's repeats are worth stopping the queue for |
 | `FACTORY_REVIEW_POKES` | `1800` | the review-poke floor, seconds |
+| `FACTORY_HARNESS_POKE` | `1` | `1` sweeps the harness repository's open pulls for the reviewer ask each pass (`HARNESS-POKE-SWEEP`); `0` refuses and journals `HARNESS-POKE-OFF` |
 | `FACTORY_ESCALATE_AFTER` | `86400` | how long in a non-progress state before one comment |
 | `FACTORY_STALE_ESCALATE` | `3` | how many consecutive activations may report the installed tree behind and not repair it before `--status`'s verdict reads `STALE`, or report the harness tree behind where H-0056 forbids the repair before it reads `HARNESS-STALE` (#342, #3). Three: enough to ride out one pass whose refusal cause clears, short enough that nobody reads 92 journal lines to call the outage a defect |
 | `FACTORY_REAP_NOTICE_SECS` | `5` | the teardown that counts as held: past this, `REAP-CLEAN` becomes `REAP-HELD how=unexplained` unless systemd named a cause. The `stop=` subject on that row is a separate read with its own two knobs, both in `factory/common.sh`: `FACTORY_STOP_WINDOW_GRACE` (`5`) how far outside the hold a sample may fall and still be this stop's, and `FACTORY_STOP_WINDOW_MAX` (`8`) how many processes one row names before `,+K` (#477) |
