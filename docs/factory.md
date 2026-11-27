@@ -1172,9 +1172,17 @@ and `ahead = 0`. Every refusal is a named condition, printed and never acted on:
   position arms read it honestly while the merge wrote a tree no reader of this log was
   watching). The refusal sits after the position read -- a tree git cannot count stays the
   unstreaked `SUPERVISOR-UNKNOWN` it was, because #342's contract says an unknown count is not
-  a refusal -- and an uncountable tree reaches no merge either way. It counts into the streak
-  like any unrepaired staleness, because passes aimed at a
-  foreign tree are an outage in the same shape.
+  a refusal -- and an uncountable tree reaches no merge either way. Which streak the refusal
+  feeds is a two-answer question since the harness/target split (H-0407, #3): a tree that is
+  neither the target nor this harness is the foreign-tree outage #489 filed and counts into
+  `supervisor.stale-streak` like any unrepaired staleness; the harness tree the unit execs is
+  the split's permanent non-target, H-0056 forbids this pass to repair it, so its behind-ness
+  counts into `supervisor.harness-streak` instead -- and at `behind=0` it clears that streak
+  and arms nothing, because an architectural constant may not saturate an escalation built to
+  fire on an outage. At `behind=0` it also clears `supervisor.stale-streak`: that is #342's own
+  clearing rule, "a current tree ... clears it", applied to the tree the unit actually execs --
+  without it the streak the old counting armed on the live box (28 at the time of the fix)
+  would sit armed under the new code forever, a stuck arm replacing the misarm.
 - The streak and the escalation: an activation that reported staleness and did not repair it appends
   its condition to a ledger line (`supervisor.stale-streak`); a current tree or a completed repair
   clears it. `factory.sh --status` then prints a fifth verdict word, `STALE`, once the streak reaches
@@ -1182,6 +1190,14 @@ and `ahead = 0`. Every refusal is a named condition, printed and never acted on:
   is still asked first -- every repair sentence is written into `supervisor.log`, so a loop printing
   them is never stalled, and a loop gone silent has a newer fault than staleness. `STALE` replaces
   `WORKING`/`IDLE`, the two words behind which this outage sat for 92 activations.
+- The harness streak and its own word (#3, H-0408): the parallel ledger line
+  `supervisor.harness-streak` counts activations that found the harness tree the unit execs behind
+  `origin/<trunk>` when H-0056 forbids the pass to repair it, and a harness tree at the trunk clears
+  it. At the same `FACTORY_STALE_ESCALATE` threshold `--status` prints the sixth verdict word,
+  `HARNESS-STALE`, whose sentence names the repair it cannot do: pull the harness checkout by hand
+  under the claim protocol. Two words because two promises -- `STALE` says the loop is not fixing
+  what it could fix; `HARNESS-STALE` says a person must pull a tree the loop may not touch. Where
+  both streaks are armed, `STALE` is printed: the repairable failure is the actionable one.
 
 `--dry-run` prints `DRY-RUN  git -C <tree> merge --ff-only origin/<trunk>` and touches nothing --
 including the streak, because a dry run writes no ledger (H-0017). The exit `9` joins `8` in the
@@ -1986,7 +2002,7 @@ answering in a shell that has never sourced the harness.
 | `FACTORY_STREAK_HALT` | `0` | whether one unit's second preserved accident halts the whole repository as well as costing that unit its turn (#341 demand 3). `0` is the shipped scope: the unit loses its pass and every other unit is ticked. `1` is the pre-#341 escalation, kept reachable because it is the shape the halt re-probe is written against and because an operator may decide one unit's repeats are worth stopping the queue for |
 | `FACTORY_REVIEW_POKES` | `1800` | the review-poke floor, seconds |
 | `FACTORY_ESCALATE_AFTER` | `86400` | how long in a non-progress state before one comment |
-| `FACTORY_STALE_ESCALATE` | `3` | how many consecutive activations may report the installed tree behind and not repair it before `--status`'s verdict reads `STALE` (#342). Three: enough to ride out one pass whose refusal cause clears, short enough that nobody reads 92 journal lines to call the outage a defect |
+| `FACTORY_STALE_ESCALATE` | `3` | how many consecutive activations may report the installed tree behind and not repair it before `--status`'s verdict reads `STALE`, or report the harness tree behind where H-0056 forbids the repair before it reads `HARNESS-STALE` (#342, #3). Three: enough to ride out one pass whose refusal cause clears, short enough that nobody reads 92 journal lines to call the outage a defect |
 | `FACTORY_REAP_NOTICE_SECS` | `5` | the teardown that counts as held: past this, `REAP-CLEAN` becomes `REAP-HELD how=unexplained` unless systemd named a cause. The `stop=` subject on that row is a separate read with its own two knobs, both in `factory/common.sh`: `FACTORY_STOP_WINDOW_GRACE` (`5`) how far outside the hold a sample may fall and still be this stop's, and `FACTORY_STOP_WINDOW_MAX` (`8`) how many processes one row names before `,+K` (#477) |
 | `FACTORY_REAP_TAIL` | `400` | how many of the unit's journal lines the reaping read is allowed to look at -- a bound on the read, never the measurement |
 | `FACTORY_LOG_TAIL` | `400` | how many of the unit's journal lines the read of the journal's own location looks back for the last line that named a directory (#260); a line-count window, so a pass that outwrites it is told `LOG-MOVED-UNKNOWN rc=2`, never "it has not moved" |

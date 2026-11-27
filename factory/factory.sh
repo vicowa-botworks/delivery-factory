@@ -54,7 +54,7 @@ usage: factory.sh [--dry-run] [--max-ticks N] [--budget SECS] [--once] [--status
 --max-ticks N model ticks this pass may start (default FACTORY_MAX_TICKS=3).
 --budget S    stop opening new ticks after S seconds (default FACTORY_BUDGET=5400).
 --once        at most one tick; the same as --max-ticks 1.
---status      print one verdict -- WORKING, IDLE, HALTED, STALE or STALLED -- then the halt state and
+--status      print one verdict -- WORKING, IDLE, HALTED, STALE, HARNESS-STALE or STALLED -- then the halt state and
               the ledger, and exit without reading GitHub. The verdict is local state only: the halt of
               9 Nov was exactly the moment a read of GitHub was not the useful one.
 
