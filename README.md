@@ -5,8 +5,9 @@ a timer, reads the repository's open issues and pull requests, and drives the
 work — implement an issue and open a pull request, answer review comments,
 request reviewers, keep checks green — through a coding agent
 (the `factory` agent for [OpenCode](https://opencode.ai), or any harness
-invoked the same way). You file issues and make the merge calls; the factory
-does everything in between, unattended.
+invoked the same way). You file issues and hold the reviews; the factory does
+everything in between, unattended — including merging, once a pull request is
+fully approved with every check green and nothing in conflict.
 
 ## Quick start
 
@@ -44,8 +45,12 @@ without linger a user timer stops at logout.
 
 Then open an issue in your project's repository. Within one interval the
 factory claims it, opens a pull request against it, asks your team for a
-review, answers review comments, and waits — it never merges: merging stays
-yours. To stop the queue at any moment, touch the halt flag
+review, answers review comments — and when the pull request is `APPROVED`,
+every check has passed, and nothing conflicts, the supervisor merges it itself,
+in bash, after re-reading all four facts from the API at the moment of the
+merge (never on a triage verdict that aged a few minutes). What you hold is the
+review: nothing merges without your approval, and a review you change pulls
+the merge back. To stop the queue at any moment, touch the halt flag
 (`touch factory/HALT` in the harness checkout); to take the timer off
 entirely:
 
