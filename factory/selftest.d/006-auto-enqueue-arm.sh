@@ -30,7 +30,22 @@
 #      with rc 1 and the stamp INTACT (a dropped stamp on a failed read is how a finished merge
 #      becomes an orphan tree);
 #  10. a still-pending queueing keeps its stamp, says PENDING, and escalates through
-#      `factory_maybe_notice` on the enqueue clock -- the wait is not lost, it moved.
+#      `factory_maybe_notice` on the enqueue clock -- the wait is not lost, it moved;
+#  11. a queueing that has vanished from the server -- auto-merge switched off behind the queue's
+#      back, or GitHub dropping the queueing -- is `AUTO-ENQUEUE-CANCELLED`: the stamp is cleared,
+#      nothing escalates, and the offer re-presents next pass; an UNREADABLE queueing read keeps
+#      the stamp, because guessing here orphans a queueing that is really still there;
+#  12. (control) the closed-unmerged fixture of 9a, run against an extracted arm with the boundary
+#      `ascii_upcase` removed from the `state` read, must NOT drop the queueing -- proof that 9a
+#      measures the wire rather than the code's own spelling.
+#
+# `state` casing is a fixture-honesty rule, not cosmetics. Every read in this leg goes through the
+# shipped `api_get`, which is plain REST (`gh api repos/... --jq`), and REST answers a pull's
+# `state` in LOWERCASE (#424; re-measured under review 27 Nov: `gh api
+# repos/vicowa-botworks/delivery-factory/pulls/6 --jq .state` is `closed`). So the payloads below
+# answer `open`/`closed` the way the wire does, and the arm's boundary normalisation is what makes
+# `[ "$state" = "CLOSED" ]` true. A fixture welded to the code's spelling is how the drop branch
+# stayed green while being dead on the wire -- the defect class this file exists to catch.
 
 # The identity rule of leg 000's scan applies to every `git init` below: an identity line sits
 # within three lines of each one.
@@ -69,6 +84,13 @@ case "$*" in
 	exit 9
 	;;
 *autoMergeRequest*)
+	# `fail` is the plant leg 11b needs and nothing else: the QUEUEING read going down while the
+	# pull's own merged/state read stays healthy. `AE_PULL=fail` cannot express that -- it fails the
+	# merged/state reads, which is leg 9b's different question.
+	if [ "${AE_AUTOREQ-}" = fail ]; then
+		printf 'gh: HTTP 502 (fixture)\n' >&2
+		exit 1
+	fi
 	answer "${AE_AUTOREQ:-{\"autoMergeRequest\":{\"mergeMethod\":\"MERGE\"}}}" "$@"
 	exit 0
 	;;
@@ -78,7 +100,8 @@ case "$*" in
 		printf 'gh: HTTP 404 (fixture)\n' >&2
 		exit 1
 	;;
-	'') answer '{"merged":false,"state":"OPEN"}' "$@" ;;
+	# lowercase `state`, because that is what REST answers for a pull (#424) -- see the header.
+	'') answer '{"merged":false,"state":"open"}' "$@" ;;
 	*) answer "$AE_PULL" "$@" ;;
 	esac
 	exit 0
@@ -138,8 +161,11 @@ ae_run() {
 		set -eu
 		# shellcheck disable=SC1091
 		. "$ae_root/factory/common.sh"
+		# AE_ARM is the mutant seam: leg 12 runs the same fixtures against an extracted arm with
+		# one token removed, and a control that cannot be aimed at a different body is a control
+		# that proves nothing. Unset, every caller gets the shipped extraction.
 		# shellcheck disable=SC1090
-		. "$ae_work/arm.sh"
+		. "${AE_ARM:-$ae_work/arm.sh}"
 		# The two collaborators this leg is NOT about, stubbed loudly rather than silently
 		# absent: a finalize that never asks closure, or a wait that never escalates, would
 		# pass for the wrong reason. SC2317: their bodies are called only from the extracted
@@ -181,6 +207,13 @@ ae_journal_has() {
 	ae_say "the journal was:"; sed 's/^/              /' "$1" >&2
 	ae_say "with nothing matching: $2"; return 1
 }
+ae_journal_no() {
+	if grep -qF -- "$2" "$1"; then
+		ae_say "the journal carries $2, and it must not:"; sed 's/^/              /' "$1" >&2
+		return 1
+	fi
+	return 0
+}
 
 # 1. the pending+approved+opted-in shape enqueues, reads back, and stamps the branch.
 ae_offer_lands() {
@@ -203,6 +236,11 @@ ae_repo_refuses() {
 	[ "$rc" -eq 1 ] || { ae_say "the offer returned $rc, not 1 (the wait must stand):"; return 1; }
 	ae_calls_has "$c" 'repos/example/repo' || return 1
 	ae_calls_no "$c" '--auto' || return 1
+	# And the refusal has a voice -- the H-0409 principle applied to this arm under review: a silent
+	# repository-level NO reads the same in the journal as never reaching the offer at all. The
+	# decision entry and the PR body both promise this line, so a leg plants it (a branch nobody
+	# plants is a branch nobody has seen run).
+	ae_journal_has "$j" 'AUTO-ENQUEUE-REPO-NO pr:9' || return 1
 }
 claim_leg "006: a repository without auto-merge fails closed to the wait" ae_repo_refuses
 
@@ -280,7 +318,7 @@ ae_sweep_merged() {
 	led=$(mktemp -d "$ae_work/ledger-XXXXXX")
 	printf '2026-11-27T00:00:00Z' >"$(ae_ledger "$led" 'pr:9' auto-enqueue)"
 	printf 'fix/widget' >"$(ae_ledger "$led" 'pr:9' auto-enqueue-branch)"
-	AE_PULL='{"merged":true,"state":"CLOSED"}' AE_LEDGER=$led ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
+	AE_PULL='{"merged":true,"state":"closed"}' AE_LEDGER=$led ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
 	[ "$rc" -eq 0 ] || { ae_say "the sweep returned $rc, not 0:"; sed 's/^/              /' "$j" >&2; return 1; }
 	ae_journal_has "$j" 'AUTO-MERGED pr:9' || return 1
 	ae_calls_has "$c" 'closure-checked 9' || return 1
@@ -291,12 +329,14 @@ ae_sweep_merged() {
 }
 claim_leg "006: a merge GitHub completed gets the queue's own closeout" ae_sweep_merged
 
-# 9a. closed UNMERGED: the queueing is dropped, nothing merges, nothing escalates.
+# 9a. closed UNMERGED: the queueing is dropped, nothing merges, nothing escalates. The payload says
+#     `closed`, lowercase, as REST answers it (#424); leg 12 is the control that proves this fixture
+#     is what makes the leg measure the wire and not the arm's own spelling.
 ae_sweep_closed() {
 	local j=$ae_work/j9 c=$ae_work/c9 rc=0 led
 	led=$(mktemp -d "$ae_work/ledger-XXXXXX")
 	printf '2026-11-27T00:00:00Z' >"$(ae_ledger "$led" 'pr:9' auto-enqueue)"
-	AE_PULL='{"merged":false,"state":"CLOSED"}' AE_LEDGER=$led ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
+	AE_PULL='{"merged":false,"state":"closed"}' AE_LEDGER=$led ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
 	[ "$rc" -eq 0 ] || { ae_say "the sweep returned $rc, not 0"; return 1; }
 	ae_journal_has "$j" 'AUTO-ENQUEUE-CLOSED pr:9' || return 1
 	[ ! -s "$(ae_ledger "$led" 'pr:9' auto-enqueue)" ] || { ae_say "a closed-unmerged pull kept its queueing"; return 1; }
@@ -324,7 +364,7 @@ ae_sweep_pending() {
 	local j=$ae_work/j11 c=$ae_work/c11 rc=0 led
 	led=$(mktemp -d "$ae_work/ledger-XXXXXX")
 	printf '2026-11-26T00:00:00Z' >"$(ae_ledger "$led" 'pr:9' auto-enqueue)"
-	AE_PULL='{"merged":false,"state":"OPEN"}' AE_LEDGER=$led ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
+	AE_PULL='{"merged":false,"state":"open"}' AE_LEDGER=$led ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
 	[ "$rc" -eq 0 ] || { ae_say "a pending queueing returned $rc, not 0"; return 1; }
 	ae_journal_has "$j" 'AUTO-ENQUEUE-PENDING pr:9 enqueued 2026-11-26T00:00:00Z' || return 1
 	ae_calls_has "$c" 'notice pr:9 awaiting_merge clock=2026-11-26T00:00:00Z' || return 1
@@ -332,3 +372,83 @@ ae_sweep_pending() {
 	return 0
 }
 claim_leg "006: a pending queueing keeps its stamp and its escalation clock" ae_sweep_pending
+
+# 11a. the queueing is gone from the server -- auto-merge switched off behind the queue's back, or
+#      GitHub dropping the queueing. The pull reads open, unmerged and green, which is the pending
+#      shape byte for byte: only re-reading the queueing itself tells the two apart. The answer is
+#      CANCELLED with both stamps cleared, so the offer re-presents next pass. Escalating here would
+#      be worse than silence: a NOTICE blaming checks that cleared three passes ago points the reader
+#      at the one thing that is fine.
+ae_sweep_cancelled() {
+	local j=$ae_work/j12 c=$ae_work/c12 rc=0 led
+	led=$(mktemp -d "$ae_work/ledger-XXXXXX")
+	printf '2026-11-26T00:00:00Z' >"$(ae_ledger "$led" 'pr:9' auto-enqueue)"
+	printf 'fix/widget' >"$(ae_ledger "$led" 'pr:9' auto-enqueue-branch)"
+	AE_PULL='{"merged":false,"state":"open"}' AE_AUTOREQ='{"autoMergeRequest":null}' AE_LEDGER=$led \
+		ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
+	[ "$rc" -eq 0 ] || { ae_say "a cancelled queueing returned $rc, not 0:"; sed 's/^/              /' "$j" >&2; return 1; }
+	ae_journal_has "$j" 'AUTO-ENQUEUE-CANCELLED pr:9' || return 1
+	ae_journal_no "$j" 'AUTO-ENQUEUE-PENDING pr:9' || return 1
+	ae_calls_no "$c" 'notice pr:9' || return 1
+	[ ! -s "$(ae_ledger "$led" 'pr:9' auto-enqueue)" ] || { ae_say "a cancelled queueing kept its stamp, so it will never be re-offered"; return 1; }
+	[ ! -s "$(ae_ledger "$led" 'pr:9' auto-enqueue-branch)" ] || { ae_say "a cancelled queueing kept its branch stamp"; return 1; }
+	return 0
+}
+claim_leg "006: a queueing that vanished server-side is cancelled, not escalated" ae_sweep_cancelled
+
+# 11b. the same sweep with only the QUEUEING read unreachable (leg 9b killed merged/state too, which
+#      is a different failure). An unreadable queueing must keep the stamp and keep escalating:
+#      clearing it on a failed read orphans a queueing that is still there, and GitHub will merge a
+#      pull the ledger has stopped watching -- the phantom in the other direction.
+ae_sweep_autoreq_unreadable() {
+	local j=$ae_work/j13 c=$ae_work/c13 rc=0 led
+	led=$(mktemp -d "$ae_work/ledger-XXXXXX")
+	printf '2026-11-26T00:00:00Z' >"$(ae_ledger "$led" 'pr:9' auto-enqueue)"
+	AE_PULL='{"merged":false,"state":"open"}' AE_AUTOREQ=fail AE_LEDGER=$led \
+		ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
+	[ "$rc" -eq 0 ] || { ae_say "an unreadable queueing read returned $rc, not 0:"; sed 's/^/              /' "$j" >&2; return 1; }
+	ae_journal_has "$j" 'AUTO-ENQUEUE-PENDING pr:9' || return 1
+	ae_journal_no "$j" 'AUTO-ENQUEUE-CANCELLED pr:9' || return 1
+	ae_calls_has "$c" 'notice pr:9 awaiting_merge' || return 1
+	[ -s "$(ae_ledger "$led" 'pr:9' auto-enqueue)" ] || { ae_say "the stamp died on an unreadable read, orphaning a live queueing"; return 1; }
+	return 0
+}
+claim_leg "006: an unreadable queueing read keeps the stamp and the escalation" ae_sweep_autoreq_unreadable
+
+# 12. (control) leg 9a must be measuring the wire, not the arm. Same closed-unmerged fixture, same
+#     ledger, run against the extracted arm with one token removed: the boundary `ascii_upcase`. If
+#     the fixture said `CLOSED` the way the arm does, removing the boundary would change nothing and
+#     9a would stay green on a branch that is dead on production -- the exact shape of the defect
+#     review caught, where four legs pinned a compare that could never fire. This leg fails if the
+#     mutant still drops the queueing: that would mean 9a never depended on the boundary at all.
+#     Same discipline as 506's named mutants and 442's `jc_ctl_mutant`.
+ae_ctl_casing() {
+	local m=$ae_work/arm-no-upcase.sh j=$ae_work/j14 c=$ae_work/c14 rc=0 led
+	if ! grep -qF 'ascii_upcase' "$ae_work/arm.sh"; then
+		ae_say 'the extracted arm carries no ascii_upcase at all: the boundary is gone from'
+		ae_say 'factory.sh, so this control has nothing to remove and 9a is unpinned'
+		return 1
+	fi
+	sed 's/ | ascii_upcase//' "$ae_work/arm.sh" >"$m"
+	if grep -qF 'ascii_upcase' "$m"; then
+		ae_say 'the mutant still carries ascii_upcase -- the sed landed nowhere, so a'
+		ae_say 'green control here would prove nothing about which token 9a depends on'
+		return 1
+	fi
+	[ "$(wc -l <"$m")" -eq "$(wc -l <"$ae_work/arm.sh")" ] ||
+		{ ae_say 'the mutant changed the line count: the sed removed more than the token'; return 1; }
+	led=$(mktemp -d "$ae_work/ledger-XXXXXX")
+	printf '2026-11-27T00:00:00Z' >"$(ae_ledger "$led" 'pr:9' auto-enqueue)"
+	printf 'fix/widget' >"$(ae_ledger "$led" 'pr:9' auto-enqueue-branch)"
+	AE_PULL='{"merged":false,"state":"closed"}' AE_ARM=$m AE_LEDGER=$led \
+		ae_run "$j" "$c" factory_auto_enqueue_sweep || rc=$?
+	[ "$rc" -eq 0 ] || { ae_say "the mutant sweep returned $rc, not 0:"; sed 's/^/              /' "$j" >&2; return 1; }
+	ae_journal_no "$j" 'AUTO-ENQUEUE-CLOSED pr:9' || return 1
+	ae_journal_has "$j" 'AUTO-ENQUEUE-PENDING pr:9' || return 1
+	# The guarantee, not the word: with the boundary gone the queueing is still stamped, which is
+	# the state a closed-unmerged pull must never be left in.
+	[ -s "$(ae_ledger "$led" 'pr:9' auto-enqueue)" ] ||
+		{ ae_say 'the mutant dropped the stamp anyway, so 9a passes without the boundary'; return 1; }
+	return 0
+}
+claim_leg "006: control: without the boundary upcase the closed-drop goes red" ae_ctl_casing

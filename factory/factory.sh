@@ -711,18 +711,26 @@ factory_auto_merge_allowed() { # -> 0 the repository enables auto-merge | 1 it d
 # and the closeout needs to know which tree and ref to retire.
 factory_auto_enqueue_offer() { # <pr> <branch> <row-detail> -> 0 the queue owns this row now | 1 keep waiting
 	local pr=$1 branch=$2 detail=$3
+	# The row's own shape is the gate, and it is read before the knob: a row that is not the
+	# pending-checks shape makes no call and writes no line whichever way FACTORY_AUTO_ENQUEUE
+	# stands. Said once. The OFF arm used to carry its own copy of this test -- and a second copy of
+	# a gate is a second chance to move it out of step with the first (the casing defect below is
+	# the same shape, one function on).
+	printf '%s' "$detail" | grep -q 'checks=pending' || return 1
 	if [ "$FACTORY_AUTO_ENQUEUE" != "1" ]; then
-		printf '%s' "$detail" | grep -q 'checks=pending' || return 1
 		log_event "AUTO-ENQUEUE-OFF pr:$pr FACTORY_AUTO_ENQUEUE=$FACTORY_AUTO_ENQUEUE, the wait stands"
 		return 1
 	fi
-	printf '%s' "$detail" | grep -q 'checks=pending' || return 1
 	if [ -n "$(factory_ledger_get "pr:$pr" auto-enqueue)" ]; then
 		# Already queued: the sweep carries the line from here, and the wait's escalation clock
 		# must not double-count a wait GitHub is already finishing.
 		return 0
 	fi
 	if ! factory_auto_merge_allowed; then
+		# A silent repo-level refusal is indistinguishable from never reaching the offer --
+		# the H-0409 principle, applied to this arm: say it, once per row per pass, like
+		# AUTO-ENQUEUE-OFF does for the knob.
+		log_event "AUTO-ENQUEUE-REPO-NO pr:$pr the repository does not allow auto-merge (or it could not be read), the wait stands"
 		return 1
 	fi
 	factory_auto_enqueue "$pr" "$branch"
@@ -781,7 +789,7 @@ factory_auto_enqueue() { # <pr> <branch> -> 0 queued (read back) | 1 refused or 
 # `factory_merge_finalize` the direct arm runs, so a merge by GitHub and a merge by the queue
 # leave identical records.
 factory_auto_enqueue_sweep() { # -> 0 every closeout landed | 1 a read or cleanup failed
-	local f p branch merged state enq rc=0
+	local f p branch merged state enq enq_now rc=0
 	for f in "$FACTORY_LEDGER"/pr:*.auto-enqueue; do
 		[ -e "$f" ] || continue
 		p=${f##*/}
@@ -789,7 +797,7 @@ factory_auto_enqueue_sweep() { # -> 0 every closeout landed | 1 a read or cleanu
 		p=${p%%.*}
 		branch=$(factory_ledger_get "pr:$p" auto-enqueue-branch)
 		merged=$(api_get "pulls/$p" '.merged | tostring' 'unknown')
-		state=$(api_get "pulls/$p" '.state' 'UNKNOWN')
+		state=$(api_get "pulls/$p" '(.state // "") | ascii_upcase' 'UNKNOWN')
 		if [ "$DRY_RUN" = "1" ]; then
 			log_event "WOULD-AUTO-CLOSEOUT pr:$p state=$state merged=$merged the ledger was not touched"
 			continue
@@ -805,16 +813,29 @@ factory_auto_enqueue_sweep() { # -> 0 every closeout landed | 1 a read or cleanu
 		elif [ "$state" = "CLOSED" ]; then
 			# Closed unmerged: somebody rejected it or merged it sideways and GitHub says no
 			# merge record exists. The queue's answer is to forget the queueing, not to
-			# resurrect it. REST answers open/closed -- uppercase, measured through the same
-			# api_get a leg now pins.
+			# resurrect it. The wire answers lowercase (#424, measured again under review:
+			# gh api pulls/6 --jq .state is `closed`), so the upcasing happens once at the
+			# boundary above, and leg 006's fixture answers the way the wire does.
 			log_event "AUTO-ENQUEUE-CLOSED pr:$p closed without a merge, the queueing is dropped"
 			factory_ledger_clear "pr:$p" auto-enqueue
 			factory_ledger_clear "pr:$p" auto-enqueue-branch
 		else
 			enq=$(factory_ledger_get "pr:$p" auto-enqueue)
-			log_event "AUTO-ENQUEUE-PENDING pr:$p enqueued $enq still waiting on its checks"
-			factory_maybe_notice "pr:$p" awaiting_merge "$enq" \
-				"queued for auto-merge at $enq and the checks have still not cleared"
+			# A queue cancelled behind our back -- auto-merge switched off on the repo, or
+			# GitHub dropping the queueing -- leaves the pull open, unmerged and green:
+			# indistinguishable from pending unless the queueing itself is re-read. Only a
+			# SUCCESSFUL read answering null clears the stamp; an unreadable read keeps the
+			# stamp and the escalation, because guessing here orphans a real queueing.
+			enq_now=$(api_get "pulls/$p" '.autoMergeRequest | tostring' 'unknown')
+			if [ "$enq_now" = "null" ]; then
+				log_event "AUTO-ENQUEUE-CANCELLED pr:$p the queueing is gone from the server; the offer re-presents next pass"
+				factory_ledger_clear "pr:$p" auto-enqueue
+				factory_ledger_clear "pr:$p" auto-enqueue-branch
+			else
+				log_event "AUTO-ENQUEUE-PENDING pr:$p enqueued $enq still waiting on its checks"
+				factory_maybe_notice "pr:$p" awaiting_merge "$enq" \
+					"queued for auto-merge at $enq and the checks have still not cleared"
+			fi
 		fi
 	done
 	return "$rc"
