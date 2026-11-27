@@ -1145,6 +1145,14 @@ EOF
 #            `SUPERVISOR-*` line every activation is by construction not stalled, so this can only
 #            replace WORKING and IDLE -- the two words behind which 92 `SUPERVISOR-STALE` lines sat
 #            on 13 Nov without a single reader able to call them a defect.
+#   HARNESS-STALE
+#            the HARNESS tree the installed unit execs has been behind `origin/$FACTORY_BASE` for
+#            FACTORY_STALE_ESCALATE consecutive activations, and H-0056 forbids this pass to
+#            repair that tree (#3, H-0408). Its own word because its own repair: STALE means the
+#            loop is not fixing what it could fix; HARNESS-STALE means a person must pull the
+#            harness checkout by hand under the claim protocol. Since the harness/target split
+#            the two trees differ by design, so counting one refusal into both escalations
+#            would saturate STALE on an architectural constant.
 #   WORKING  a tick started inside FACTORY_STALL_SECS.
 #   IDLE     the journal is younger than the window and no tick is running: every unit is waiting on a
 #            review, a check or a conflict. That is a queue with nothing to do, not a broken queue.
@@ -1152,7 +1160,7 @@ EOF
 # It reads local state only -- a marker, a journal, one ledger line, one systemctl query -- because
 # the times it matters most are the times GitHub may not be reachable either.
 factory_verdict() {
-	local tick pass stale reason halt_asking
+	local tick pass stale reason halt_asking harness_stale harness_reason
 	if factory_halted; then
 		# The verdict never probes: like `--status`'s `halt:` line it chooses the asking clause from
 		# the marker itself, and the test is zero-write. A marker carrying a machine target is
@@ -1185,6 +1193,21 @@ factory_verdict() {
 		printf 'STALE the installed tree has been behind origin/%s, unrepaired, for %s consecutive activations (escalates at %s; last refusal: %s) -- the loop is reporting, not repairing; `grep SUPERVISOR-FF-REFUSED %s/supervisor.log` names the condition\n' \
 			"${FACTORY_BASE:-main}" "$stale" "$FACTORY_STALE_ESCALATE" \
 			"${reason:-not recorded}" "$FACTORY_LOG"
+		return 0
+	fi
+	# HARNESS-STALE (#3, H-0408): the tree the installed unit execs is behind and this pass is
+	# forbidden to repair it -- H-0056 chose report-and-refuse for that tree, so this is the
+	# report half, with its own word because the two streaks promise different repairs: STALE
+	# means a repairable thing went unrepaired by the loop; HARNESS-STALE means the harness
+	# checkout is behind and a person should pull it, by hand, under the claim protocol.
+	# Ordered after STALE on purpose: where both are true, the repairable failure is the
+	# actionable one, and a verdict prints one word.
+	harness_stale=$(factory_ledger_int supervisor harness-streak)
+	if [ "$harness_stale" -ge "$FACTORY_STALE_ESCALATE" ]; then
+		harness_reason=$(factory_ledger_get supervisor harness-reason)
+		printf 'HARNESS-STALE the harness tree the installed unit execs has been behind origin/%s for %s consecutive activations and this loop may not repair it (escalates at %s; last refusal: %s) -- H-0056 says report without repairing; pull the harness checkout by hand under the claim protocol; `grep SUPERVISOR-FF-REFUSED %s/supervisor.log` names the condition\n' \
+			"${FACTORY_BASE:-main}" "$harness_stale" "$FACTORY_STALE_ESCALATE" \
+			"${harness_reason:-not recorded}" "$FACTORY_LOG"
 		return 0
 	fi
 	if [ "$tick" -le "$FACTORY_STALL_SECS" ]; then
@@ -4659,6 +4682,26 @@ factory_stale_reset() {
 	factory_ledger_clear supervisor stale-reason
 }
 
+# The harness streak (#3, H-0408). The same shape as the stale pair, a different world: these
+# facts count activations that saw the HARNESS tree the installed unit execs behind and were
+# forbidden to repair it (H-0056 chose report-don't-repair for that tree). `stale-streak` counts
+# activations that failed to fix what they could have fixed -- which is why its escalation
+# sentence says "the loop is reporting, not repairing"; `harness-streak` counts activations that
+# reported a thing they may not repair, by design. One number for both saturated `STALE` the day
+# the harness/target split landed (measured live on the box that runs the timer: a streak of 27
+# arming the unrepaired sentence against a checkout at `behind=0`), which is what #3 filed.
+factory_harness_tally() { # factory_harness_tally <refusal token>
+	local n
+	n=$(( $(factory_ledger_int supervisor harness-streak) + 1 ))
+	factory_ledger_set supervisor harness-streak "$n"
+	factory_ledger_set supervisor harness-reason "$1"
+}
+
+factory_harness_reset() {
+	factory_ledger_set supervisor harness-streak 0
+	factory_ledger_clear supervisor harness-reason
+}
+
 # factory_supervisor_repair [UNIT_FILE]
 #   Prints the pass's sentences about the repair (the caller logs them; same shape as
 #   `factory_unit_lines`). Returns:
@@ -4700,17 +4743,55 @@ factory_supervisor_repair() {
 	# unstreaked, because #342's blind-activation contract says an unknown count is not a
 	# refusal, and the position read is the one that knows which trees those are.
 	# A pass knows its own checkout only as `$FACTORY_ROOT`; an installed tree that is not it
-	# belongs to another process, and no position it holds licenses a merge into it. Counted
-	# into the streak deliberately: passes aimed at a foreign tree are the outage #489 filed,
-	# and `--status` should say STALE about one after the same threshold it says it about any
-	# unrepaired staleness. A tree the gate refuses is only ever a tree it can prove foreign:
+	# is a tree this pass may not merge into however current it reads -- the merge it would
+	# reach is a write into code another arm of the loop, or a person, stands on. WHICH
+	# streak the refusal feeds is decided just below, two ways: a tree that is neither the
+	# target nor this harness is #489's outage and counts into `stale-streak`, so `--status`
+	# says STALE about it after the same threshold it says it about any unrepaired staleness;
+	# the harness tree the unit execs counts into its own `harness-streak` only while it is
+	# actually behind (H-0407 made this relation permanent, H-0408 gave it its own word).
+	# A tree the gate refuses is only ever a tree it can prove is not its target:
 	# unresolvable or uncountable trees are the arms above, unstreaked. An unreadable
 	# `$FACTORY_ROOT` still refuses a positionable tree -- this pass cannot prove ownership of
 	# what it cannot see, and the merge it would reach is a write.
 	root_canon=$(cd -- "${FACTORY_ROOT:-}" 2>/dev/null && pwd -P) || root_canon=''
 	inst_canon=$(cd -- "$installed" 2>/dev/null && pwd -P) || inst_canon=''
 	if [ -n "$inst_canon" ] && { [ -z "$root_canon" ] || [ "$inst_canon" != "$root_canon" ]; }; then
-		factory_stale_tally "not-this-pass installed=$installed"
+		# Which streak this refusal belongs to became a two-answer question with H-0407 (#3).
+		# Pre-split, `installed != root` could only mean a foreign tree -- the outage #489
+		# filed -- and counting it into `stale-streak` was right. Post-split, the unit execs
+		# the HARNESS and supervises another repository: `installed == FACTORY_HARNESS` and
+		# `installed != root` is the architecture, true on every activation forever. A
+		# constant may not saturate an escalation built to fire on an outage (#3 measured
+		# STALE armed against `behind=0`), and the same tree's behind-ness may not go silent
+		# either -- #342 filed exactly silence-then-STALE, and H-0056's chosen option is
+		# "report it". So the harness tree's own position decides, with the same blind arm as
+		# every other streak: current-at-trunk clears `harness-streak`, behind counts into it
+		# (and `--status` escalates it as `HARNESS-STALE`, a word that promises a pull by
+		# hand, not a repair), and a position git would not count touches nothing. A tree
+		# that is neither the target nor this harness keeps #489's contract byte-for-byte:
+		# it counts into `stale-streak`, and `--status` says STALE about it after the same
+		# threshold -- an unresolvable `$FACTORY_HARNESS` is that arm too, because a pass
+		# that cannot name its own tree cannot license clearing the streak of one it can.
+		if [ -n "${FACTORY_HARNESS:-}" ] && [ "$inst_canon" = "$(cd -- "$FACTORY_HARNESS" 2>/dev/null && pwd -P)" ]; then
+			hbehind=$(printf '%s\n' "$pos" | cut -f3)
+			if [ -n "$hbehind" ] && [ -z "${hbehind//[0-9]/}" ]; then
+				if [ "$hbehind" = "0" ]; then
+					factory_harness_reset
+					# #342's documented clearing rule is "a current tree ... clears it", and on
+					# this branch the installed tree IS the current tree -- the unit's own
+					# ExecStart target sits at the trunk. Pre-split code reached its clear;
+					# post-split the gate returns before it, so without this line the live box
+					# that armed streak 28 under the old counting (issue #3) would read STALE
+					# forever under the new one, the misarm replaced by a stuck arm.
+					factory_stale_reset
+				else
+					factory_harness_tally "harness-behind=$hbehind installed=$installed"
+				fi
+			fi
+		else
+			factory_stale_tally "not-this-pass installed=$installed"
+		fi
 		printf 'SUPERVISOR-FF-REFUSED not-this-pass tree=%s root=%s -- %s is not the checkout this pass supervises (%s); the unit file names a tree another process runs, and this pass will not merge into it\n' \
 			"$installed" "${root_canon:-FACTORY_ROOT-unreadable}" "$installed" "${root_canon:-unset}"
 		return 0

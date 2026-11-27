@@ -14609,7 +14609,12 @@ install_current_silent() {
 	# asking whether the installer said anything about the tree's *position*; it never meant to forbid
 	# naming a checkout, and naming one is now half of what #260 prints -- the fixture's trees are
 	# `tree-stale` and `tree-behind`, so the paths themselves carry the words.
-	printf '%s' "$pos_out" | sed -e "s#$pos_work/[^ ']*#<checkout>#g" |
+	# Masking only the FIXTURE's paths was itself a hole, measured 27 Nov: the `Remove:` trailer prints
+	# the caller's own install-timer.sh path verbatim, so this leg grepped the word `behind` out of the
+	# name of the checkout it was running from (a worktree slugged h-0408-harness-behind-word) and went
+	# red on a full `make verify` while the installer said nothing about any position. Mask every
+	# absolute path; the forbidden words survive masking because the sentences carry them in prose.
+	printf '%s' "$pos_out" | sed -e "s#$pos_work/[^ ']*#<checkout>#g" -e 's#/[^ '"'"']*#<path>#g' |
 		grep -qiE 'behind|stale|fork|force' && {
 		pos_say 'a tree at the trunk was told something about its position:'; pos_say "$pos_out"; return 1; }
 	return 0
