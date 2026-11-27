@@ -1,6 +1,7 @@
-# Per-target clones and the harness' own runtime state never live in this
-# tree (they live under $FACTORY_TREES and the state dir, H-0406), but a tick
-# run in-tree during development must not dirty it:
+# Per-target clones never live in this tree -- they live under $FACTORY_TREES (H-0406) -- and a tick
+# run in-tree during development must not dirty it. H-0407 then moved the supervisor's state box HERE,
+# beside the code that writes it, so the live journal, ledger, lock and halt are the four rules at the
+# foot of this file rather than a directory somewhere else:
 .factory-run/
 .factory-ledger.json
 .factory-log/
@@ -38,3 +39,17 @@
 # scanner bytecode
 __pycache__/
 *.pyc
+
+# The delivery supervisor's own state, which H-0407 put beside the harness rather than in a state
+# directory of its own. All four are machine state and none of them may read as dirt: measured 26 Nov
+# on the first pass after the re-arm -- `SUPERVISOR-AT 3fafef6 dirty=1378`, then
+# `MAIN-CHECKOUT-REFUSED cause=not-restorable shapes=untracked` and `SUPERVISOR-FF-REFUSED
+# not-this-pass`, the supervisor's own hygiene gate refusing to fast-forward the tree the unit execs
+# because the journal that pass had just written counted as untracked work. The product tree the box
+# moved OUT of already ignored all four (its `.gitignore:65-68`); the harness took the box and not the
+# rules. `HALT` is ignored for a second reason (#216): a halt one machine wrote must never be shipped
+# to another by a commit.
+/factory/log/
+/factory/ledger/
+/factory/run/
+/factory/HALT
