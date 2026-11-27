@@ -125,6 +125,12 @@ FACTORY_REVIEWER_TEAM=${FACTORY_REVIEWER_TEAM-workers}
 # `HARNESS-POKE-OFF` every pass, because a queue that quietly stops being swept is the same silence
 # the sweep exists to end.
 FACTORY_HARNESS_POKE=${FACTORY_HARNESS_POKE:-1}
+# The H-0411 arm: may an approved pull whose checks are still pending be ENQUEUED for GitHub's
+# auto-merge, when the repository enables it? The merge itself was always the supervisor's; this
+# knob only decides whether the WAIT may move to the server. Default on; `FACTORY_AUTO_ENQUEUE=0`
+# journals `AUTO-ENQUEUE-OFF` on every pending row it declines, for the H-0409 reason: a capability
+# that quietly stops running is indistinguishable from one that never ran.
+FACTORY_AUTO_ENQUEUE=${FACTORY_AUTO_ENQUEUE:-1}
 
 # The poke's target as one string: `team:<slug>`, `user:<login>`, or empty for neither. Written, read
 # back, logged and --dry-run'd from here, so the four cannot disagree about who was asked. They

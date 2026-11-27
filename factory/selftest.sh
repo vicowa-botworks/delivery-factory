@@ -13952,18 +13952,20 @@ claim_leg 'the vacuous row waits quietly: journal, no tick, no notice' quiet_is_
 
 # Control: the wait list with the class dropped out of it. The row must arrive as UNKNOWN-CLASS --
 # the dispatcher's own "no handler" line -- and NOT as the wait, or the ok above is being printed by
-# something other than the arm.
+# something other than the arm. (H-0411 split `awaiting_merge` out of this line into its own arm;
+# the specimen is `mergeability_pending`, whose handler still rides the joined line, so the control
+# travels with the line's current shape -- same blinding, same verdict.)
 mkdir -p "$claim_work/mut-q430-wait"
 python3 - "$claim_harness/factory.sh" "$claim_work/mut-q430-wait/factory.sh" <<'PY'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src, encoding='utf-8').read()
-old = "awaiting_merge | awaiting_review | checks_pending | draft | mergeability_pending)"
+old = "awaiting_review | checks_pending | draft | mergeability_pending)"
 if text.count(old) != 1:
     print('the quiet-wait arm in factory.sh is not the single line this control knows')
     sys.exit(3)
 open(dst, 'w', encoding='utf-8').write(text.replace(old,
-	"awaiting_merge | awaiting_review | checks_pending | draft)", 1))
+	"awaiting_review | checks_pending | draft)", 1))
 PY
 cp "$claim_harness/common.sh" "$claim_work/mut-q430-wait/common.sh"
 cp "$claim_harness/triage.sh" "$claim_work/mut-q430-wait/triage.sh"
@@ -24252,17 +24254,31 @@ cv_one_sleep() {
 claim_leg 'the probe waits once for the batch, not once per open ticket' cv_one_sleep
 
 # --- the call site --------------------------------------------------------------------------------
+# H-0411 split the closeout into factory_merge_finalize so the auto-enqueue sweep runs the SAME
+# finalize on a merge GitHub completed. The contract this leg holds did not change -- the ledger
+# stamp precedes the closure verify, and no closeout happens before the stamp -- but the split
+# MOVED where the guarantee lives: the arm no longer stamps at all, so stamp-first is structural
+# (the stamp line sits above the verify line INSIDE finalize), and what the dispatcher side must
+# still prove is the original load-bearing fact -- factory_merge reaches the closeout through
+# EXACTLY ONE finalize call. Deleting that call reddens here as deleting the old call site did;
+# duplicating it reddens the count.
 cv_leg_call_site() {
-	local here end stamped verify
+	local here end fhere fend stamped verify
 	here=$(grep -n '^factory_merge() {' "$HERE/factory.sh" | cut -d: -f1)
+	[ -n "$here" ] || return 1
 	end=$(awk -v a="$here" 'NR>a && /^\}/ {print NR; exit}' "$HERE/factory.sh")
-	stamped=$(awk -v a="$here" -v b="$end" \
+	fhere=$(grep -n '^factory_merge_finalize() {' "$HERE/factory.sh" | cut -d: -f1)
+	[ -n "$fhere" ] || return 1
+	fend=$(awk -v a="$fhere" 'NR>a && /^\}/ {print NR; exit}' "$HERE/factory.sh")
+	stamped=$(awk -v a="$fhere" -v b="$fend" \
 		'NR>=a && NR<=b && /factory_ledger_now "pr:\$pr" merged-at/ {print NR; exit}' "$HERE/factory.sh")
-	verify=$(awk -v a="$here" -v b="$end" \
+	verify=$(awk -v a="$fhere" -v b="$fend" \
 		'NR>=a && NR<=b && /factory_verify_closure "\$pr"/ {print NR; exit}' "$HERE/factory.sh")
-	[ -n "$stamped" ] && [ -n "$verify" ] && [ "$verify" -gt "$stamped" ]
+	[ -n "$stamped" ] && [ -n "$verify" ] && [ "$verify" -gt "$stamped" ] || return 1
+	[ "$(awk -v a="$here" -v b="$end" \
+		'NR>=a && NR<=b && /factory_merge_finalize "\$pr"/ {c++} END {print c+0}' "$HERE/factory.sh")" = 1 ]
 }
-claim_leg 'the call site sits in factory_merge, after the ledger stamp' cv_leg_call_site
+claim_leg 'the closeout stamps before it verifies, and merge reaches it through one finalize call' cv_leg_call_site
 
 # --- control: does this section bite? -------------------------------------------------------------
 # Empty the shipped function's body and the open-ticket legs must go red. A section that stays green
